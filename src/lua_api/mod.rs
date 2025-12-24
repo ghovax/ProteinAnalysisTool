@@ -10,6 +10,8 @@ use std::sync::{Arc, RwLock};
 
 use crate::protein::ProteinStore;
 
+use crate::renderer::Camera;
+
 pub use protein::LuaProtein;
 
 /// The Lua script engine
@@ -19,7 +21,7 @@ pub struct ScriptEngine {
 
 impl ScriptEngine {
     /// Creates a new `ScriptEngine` and initializes the `pdb` global API table
-    pub fn new(protein_data_store: Arc<RwLock<ProteinStore>>) -> Result<Self> {
+    pub fn new(protein_data_store: Arc<RwLock<ProteinStore>>, camera: Arc<RwLock<Camera>>) -> Result<Self> {
         let lua_runtime_instance = Lua::new();
 
         // Create pdb module
@@ -85,6 +87,92 @@ impl ScriptEngine {
         )?;
 
         lua_runtime_instance.globals().set("pdb", pdb_api_table)?;
+
+        // Create camera module
+        let camera_api_table = lua_runtime_instance.create_table()?;
+        let cloned_camera = camera.clone();
+        camera_api_table.set("get_pos", lua_runtime_instance.create_function(move |_, ()| {
+            let camera = cloned_camera.read().unwrap();
+            let pos = camera.position();
+            Ok((pos.x, pos.y, pos.z))
+        })?)?;
+
+        let cloned_camera = camera.clone();
+        camera_api_table.set("set_target", lua_runtime_instance.create_function(move |_, (x, y, z): (f32, f32, f32)| {
+            let mut camera = cloned_camera.write().unwrap();
+            camera.target = glam::Vec3::new(x, y, z);
+            Ok(())
+        })?)?;
+
+        let cloned_camera = camera.clone();
+        camera_api_table.set("set_params", lua_runtime_instance.create_function(move |_, (dist, yaw, pitch): (f32, f32, f32)| {
+            let mut camera = cloned_camera.write().unwrap();
+            camera.distance = dist;
+            camera.yaw = yaw;
+            camera.pitch = pitch;
+            Ok(())
+        })?)?;
+
+        lua_runtime_instance.globals().set("camera", camera_api_table)?;
+
+        // Create session module
+        let session_api_table = lua_runtime_instance.create_table()?;
+        let cloned_store = protein_data_store.clone();
+        let cloned_camera = camera.clone();
+        session_api_table.set("save", lua_runtime_instance.create_function(move |_, path: String| {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&path).map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+            
+            writeln!(file, "-- Protein Viewer Session State").unwrap();
+            
+            // Save proteins
+            let store = cloned_store.read().unwrap();
+            for (i, protein) in store.iter().enumerate() {
+                let p = protein.read().unwrap();
+                let var_name = format!("p{}", i);
+                match &p.source {
+                    crate::protein::structure::ProteinSource::Rcsb(code) => {
+                        writeln!(file, "local {} = pdb.fetch(\"{}\")", var_name, code).unwrap();
+                    }
+                    crate::protein::structure::ProteinSource::File(path) => {
+                        writeln!(file, "local {} = pdb.load(\"{}\")", var_name, path).unwrap();
+                    }
+                }
+                
+                let repr = match p.representation {
+                    crate::protein::structure::Representation::Spheres => "spheres",
+                    crate::protein::structure::Representation::Backbone => "backbone",
+                    crate::protein::structure::Representation::BackboneAndSpheres => "both",
+                };
+                writeln!(file, "{}:representation(\"{}\")", var_name, repr).unwrap();
+                
+                match p.color_scheme {
+                    crate::protein::structure::ColorScheme::ByChain => writeln!(file, "{}:color_by(\"chain\")", var_name).unwrap(),
+                    crate::protein::structure::ColorScheme::ByElement => writeln!(file, "{}:color_by(\"element\")", var_name).unwrap(),
+                    crate::protein::structure::ColorScheme::ByBFactor => writeln!(file, "{}:color_by(\"bfactor\")", var_name).unwrap(),
+                    crate::protein::structure::ColorScheme::BySecondary => writeln!(file, "{}:color_by(\"secondary\")", var_name).unwrap(),
+                    crate::protein::structure::ColorScheme::Uniform(c) => writeln!(file, "{}:color({}, {}, {})", var_name, c[0], c[1], c[2]).unwrap(),
+                }
+                
+                if !p.visible {
+                    writeln!(file, "{}:hide()", var_name).unwrap();
+                }
+            }
+            
+            // Save camera
+            let cam = cloned_camera.read().unwrap();
+            writeln!(file, "camera.set_target({}, {}, {})", cam.target.x, cam.target.y, cam.target.z).unwrap();
+            writeln!(file, "camera.set_params({}, {}, {})", cam.distance, cam.yaw, cam.pitch).unwrap();
+            
+            Ok(())
+        })?)?;
+
+        session_api_table.set("load", lua_runtime_instance.create_function(move |lua, path: String| {
+            let code = std::fs::read_to_string(&path).map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+            lua.load(&code).exec()
+        })?)?;
+
+        lua_runtime_instance.globals().set("session", session_api_table)?;
 
         // Simple print override for cleaner output
         let _ = lua_runtime_instance.globals().set(

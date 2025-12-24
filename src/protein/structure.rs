@@ -11,8 +11,10 @@ use std::sync::{Arc, RwLock};
 
 use super::fetch::{fetch_pdb, load_file, FileFormat};
 
+use serde::{Serialize, Deserialize};
+
 /// The available visual representation modes for a protein
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Representation {
     /// Each atom (or CA) is rendered as a sphere
     #[default]
@@ -24,7 +26,7 @@ pub enum Representation {
 }
 
 /// The available color schemes for a protein
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum ColorScheme {
     /// Color by chain identifier
     #[default]
@@ -39,12 +41,21 @@ pub enum ColorScheme {
     Uniform([f32; 3]),
 }
 
+/// Source of the protein data (for saving/loading state)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ProteinSource {
+    Rcsb(String),
+    File(String),
+}
+
 /// Core data structure containing parsed protein information and rendering state
 pub struct ProteinData {
     /// The underlying PDB data structure from `pdbtbx`
     pub pdb: PDB,
     /// Display name of the protein
     pub name: String,
+    /// Source of the protein
+    pub source: ProteinSource,
     /// Whether the protein should be rendered
     pub visible: bool,
     /// The current representation mode
@@ -55,7 +66,7 @@ pub struct ProteinData {
 
 impl ProteinData {
     /// Parses a protein structure from a string in the specified format
-    pub fn from_string(file_content_string: &str, name: &str, format: FileFormat) -> Result<Self, String> {
+    pub fn from_string(file_content_string: &str, name: &str, format: FileFormat, source: ProteinSource) -> Result<Self, String> {
         let target_file_format = match format {
             FileFormat::Pdb => Format::Pdb,
             FileFormat::Cif => Format::Mmcif,
@@ -74,6 +85,7 @@ impl ProteinData {
         Ok(Self {
             pdb,
             name: name.to_string(),
+            source,
             visible: true,
             representation: Representation::default(),
             color_scheme: ColorScheme::default(),
@@ -243,7 +255,12 @@ impl ProteinStore {
         }
 
         let fetch_operation_result = fetch_pdb(&pdb_identifier_code)?;
-        let parsed_protein_data = ProteinData::from_string(&fetch_operation_result.content, &pdb_identifier_code, fetch_operation_result.format)?;
+        let parsed_protein_data = ProteinData::from_string(
+            &fetch_operation_result.content, 
+            &pdb_identifier_code, 
+            fetch_operation_result.format,
+            ProteinSource::Rcsb(pdb_identifier_code.clone())
+        )?;
         let shared_protein_handle = Arc::new(RwLock::new(parsed_protein_data));
         self.proteins.insert(pdb_identifier_code, shared_protein_handle.clone());
         Ok(shared_protein_handle)
@@ -262,7 +279,12 @@ impl ProteinStore {
         }
 
         let load_operation_result = load_file(file_system_path)?;
-        let parsed_protein_data = ProteinData::from_string(&load_operation_result.content, &extracted_protein_name, load_operation_result.format)?;
+        let parsed_protein_data = ProteinData::from_string(
+            &load_operation_result.content, 
+            &extracted_protein_name, 
+            load_operation_result.format,
+            ProteinSource::File(file_system_path.to_string())
+        )?;
         let shared_protein_handle = Arc::new(RwLock::new(parsed_protein_data));
         self.proteins.insert(extracted_protein_name, shared_protein_handle.clone());
         Ok(shared_protein_handle)

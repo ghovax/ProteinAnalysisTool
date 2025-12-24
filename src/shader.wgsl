@@ -13,6 +13,7 @@ struct SphereInput {
     @location(0) instance_world_position: vec3<f32>,
     @location(1) radius: f32,
     @location(2) color: vec3<f32>,
+    @location(3) selection_factor: f32,
     @builtin(vertex_index) builtin_vertex_index: u32,
 }
 
@@ -23,6 +24,7 @@ struct SphereOutput {
     @location(2) world_space_position: vec3<f32>,
     @location(3) sphere_center_position: vec3<f32>,
     @location(4) radius: f32,
+    @location(5) selection_factor: f32,
 }
 
 @vertex
@@ -54,6 +56,7 @@ fn vs_sphere(input: SphereInput) -> SphereOutput {
     shader_output_data.world_space_position = world_space_position;
     shader_output_data.sphere_center_position = input.instance_world_position;
     shader_output_data.radius = input.radius;
+    shader_output_data.selection_factor = input.selection_factor;
 
     return shader_output_data;
 }
@@ -81,7 +84,19 @@ fn fs_sphere(input: SphereOutput) -> @location(0) vec4<f32> {
     let specular_lighting_factor = pow(max(dot(view_direction_vector, reflection_direction_vector), 0.0), 32.0) * 0.3;
 
     let total_lighting_intensity = ambient_lighting_factor + diffuse_lighting_factor + specular_lighting_factor;
-    let final_fragment_color = input.color * total_lighting_intensity;
+    var final_fragment_color = input.color * total_lighting_intensity;
+
+    // Highlight selected atoms
+    if input.selection_factor > 0.5 {
+        // Add a white/yellow tint and an outline-like effect at the edges
+        let selection_tint = vec3<f32>(1.0, 0.9, 0.4);
+        final_fragment_color = mix(final_fragment_color, selection_tint, 0.4);
+        
+        // Edge highlight (simple outline)
+        if squared_distance_from_center > 0.8 {
+            final_fragment_color = selection_tint;
+        }
+    }
 
     return vec4<f32>(final_fragment_color, 1.0);
 }

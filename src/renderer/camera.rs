@@ -4,8 +4,10 @@
 //! orbiting, zooming, and focusing on specific points in 3D space
 
 use glam::{Mat4, Vec3, Vec2};
+use serde::{Serialize, Deserialize};
 
 /// A 3D camera using spherical coordinates
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct Camera {
     /// The point the camera is looking at
     pub target: Vec3,

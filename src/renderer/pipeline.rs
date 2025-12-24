@@ -1,10 +1,12 @@
 //! WGPU renderer implementation for protein visualization
-//!
+//! 
 //! This module handles the creation of render pipelines, management of GPU buffers,
 //! and the actual drawing of protein structures (spheres and lines)
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
+use glam::Vec4Swizzles;
 
 use super::Camera;
 use crate::protein::{ProteinStore, Representation, ColorScheme};
@@ -19,8 +21,8 @@ pub struct SphereInstance {
     pub radius: f32,
     /// Color of the sphere (RGB)
     pub color: [f32; 3],
-    /// Explicit padding for alignment
-    pub _padding: f32,
+    /// Selection factor (0.0 = normal, 1.0 = selected)
+    pub selection_factor: f32,
 }
 
 /// Vertex data for rendering a line (backbone)
@@ -68,7 +70,7 @@ const ELEMENT_COLORS: &[(&str, [f32; 3])] = &[
 ];
 
 /// Returns the color associated with a given element symbol
-fn get_element_color(element_symbol: &str) -> [f32; 3] {
+fn _get_element_color(element_symbol: &str) -> [f32; 3] {
     for (current_element_symbol, element_color) in ELEMENT_COLORS {
         if *current_element_symbol == element_symbol {
             return *element_color;
@@ -107,6 +109,22 @@ pub struct Renderer {
     line_vertex_buffer: wgpu::Buffer,
     line_vertex_count: u32,
     depth_stencil_texture_view: wgpu::TextureView,
+
+    // Text rendering
+    font_system: glyphon::FontSystem,
+    swash_cache: glyphon::SwashCache,
+    text_atlas: glyphon::TextAtlas,
+    text_renderer: glyphon::TextRenderer,
+    text_buffer: glyphon::Buffer,
+    viewport: glyphon::Viewport,
+    render_format: wgpu::TextureFormat,
+}
+
+/// A text label at a 3D position
+pub struct TextLabel {
+    pub position: glam::Vec3,
+    pub text: String,
+    pub color: [f32; 4],
 }
 
 impl Renderer {
@@ -186,6 +204,11 @@ impl Renderer {
                             shader_location: 2,
                             format: wgpu::VertexFormat::Float32x3,
                         },
+                        wgpu::VertexAttribute {
+                            offset: 28,
+                            shader_location: 3,
+                            format: wgpu::VertexFormat::Float32,
+                        },
                     ],
                 }],
                 compilation_options: Default::default(),
@@ -226,7 +249,7 @@ impl Renderer {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<LineVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
+                    attributes: &[ 
                         wgpu::VertexAttribute {
                             offset: 0,
                             shader_location: 0,
@@ -283,6 +306,15 @@ impl Renderer {
 
         let depth_stencil_texture_view = Self::create_depth_texture(&device, width, height);
 
+        // glyphon setup
+        let mut font_system = glyphon::FontSystem::new();
+        let swash_cache = glyphon::SwashCache::new();
+        let cache = glyphon::Cache::new(&device);
+        let mut text_atlas = glyphon::TextAtlas::new(&device, &queue, &cache, surface_format);
+        let text_renderer = glyphon::TextRenderer::new(&mut text_atlas, &device, wgpu::MultisampleState::default(), None);
+        let text_buffer = glyphon::Buffer::new(&mut font_system, glyphon::Metrics::new(16.0, 20.0));
+        let viewport = glyphon::Viewport::new(&device, &cache);
+
         Self {
             device,
             queue,
@@ -295,6 +327,13 @@ impl Renderer {
             line_vertex_buffer,
             line_vertex_count: 0,
             depth_stencil_texture_view,
+            font_system,
+            swash_cache,
+            text_atlas,
+            text_renderer,
+            text_buffer,
+            viewport,
+            render_format: surface_format,
         }
     }
 
@@ -320,127 +359,157 @@ impl Renderer {
     /// Resizes the depth texture when the window is resized
     pub fn resize(&mut self, width: u32, height: u32) {
         self.depth_stencil_texture_view = Self::create_depth_texture(&self.device, width, height);
+        self.viewport.update(&self.queue, glyphon::Resolution { width, height });
     }
 
     /// Updates the GPU buffers with the latest protein instance data
-    pub fn update_instances(&mut self, store: &ProteinStore) {
-        let mut sphere_instances = Vec::new();
-        let mut line_vertices = Vec::new();
+    pub fn update_instances(&mut self, protein_data_store: &ProteinStore, currently_selected_atoms: &[(String, usize)], active_measurement_pairs: &[(usize, usize)]) {
+        let mut sphere_instances_collection = Vec::new();
+        let mut line_vertices_collection = Vec::new();
 
-        for protein_shared_reference in store.iter() {
+        let mut atom_world_positions_lookup_table = HashMap::new();
+
+        for protein_shared_reference in protein_data_store.iter() {
             let protein_locked_data = protein_shared_reference.read().unwrap();
             if !protein_locked_data.visible {
                 continue;
             }
 
-            let available_chain_identifiers: Vec<_> = protein_locked_data.chain_ids();
+            let protein_identifier_name = &protein_locked_data.name;
+            let available_chain_identifiers_collection: Vec<_> = protein_locked_data.chain_ids();
             let active_representation_mode = protein_locked_data.representation;
-            let active_color_scheme = protein_locked_data.color_scheme;
+            let active_color_scheme_mode = protein_locked_data.color_scheme;
 
-            // Get B-factor range for coloring
+            // Get B-factor range for normalization during coloring
             let (minimum_bfactor_value, maximum_bfactor_value) = protein_locked_data.bfactor_range();
 
-            // Helper to get color for a chain
-            let get_color_for_chain_identifier = |chain_id: &str| -> [f32; 3] {
-                match active_color_scheme {
+            // Helper to get color for a specific chain identifier
+            let get_color_for_chain_identifier = |chain_id_string: &str| -> [f32; 3] {
+                match active_color_scheme_mode {
                     ColorScheme::ByChain => {
-                        let chain_idx = available_chain_identifiers.iter().position(|c| c == chain_id).unwrap_or(0);
-                        CHAIN_COLORS[chain_idx % CHAIN_COLORS.len()]
+                        let chain_index_position = available_chain_identifiers_collection.iter().position(|c| c == chain_id_string).unwrap_or(0);
+                        CHAIN_COLORS[chain_index_position % CHAIN_COLORS.len()]
                     }
-                    ColorScheme::ByElement => [0.5, 0.5, 0.5], // CA is always carbon
+                    ColorScheme::ByElement => [0.5, 0.5, 0.5], // Default for Alpha Carbon (Carbon)
                     ColorScheme::ByBFactor => [0.5, 0.5, 0.5], // Will be overridden per-atom
-                    ColorScheme::BySecondary => [0.7, 0.7, 0.7], // TODO: Implement
-                    ColorScheme::Uniform(c) => c,
+                    ColorScheme::BySecondary => [0.7, 0.7, 0.7], // TODO: Implement secondary structure coloring
+                    ColorScheme::Uniform(uniform_rgb_color) => uniform_rgb_color,
                 }
             };
 
-            // Generate spheres if needed
-            if active_representation_mode == Representation::Spheres || active_representation_mode == Representation::BackboneAndSpheres {
-                let alpha_carbon_data_collection = protein_locked_data.ca_with_bfactor();
-                for (atom_position_vector, target_chain_identifier, atom_temperature_factor) in alpha_carbon_data_collection {
-                    let final_atom_color = match active_color_scheme {
+            // Generate sphere instances if the representation mode requires them
+            let alpha_carbon_data_collection = protein_locked_data.ca_with_bfactor();
+            for (atom_indexing_counter, (atom_world_position_vector, target_chain_identifier, atom_temperature_factor)) in alpha_carbon_data_collection.into_iter().enumerate() {
+                // Store world position for distance measurements
+                atom_world_positions_lookup_table.insert((protein_identifier_name.clone(), atom_indexing_counter), atom_world_position_vector);
+
+                if active_representation_mode == Representation::Spheres || active_representation_mode == Representation::BackboneAndSpheres {
+                    let final_calculated_atom_color = match active_color_scheme_mode {
                         ColorScheme::ByBFactor => bfactor_to_color(atom_temperature_factor, minimum_bfactor_value, maximum_bfactor_value),
+                        ColorScheme::ByElement => _get_element_color("C"), // Alpha Carbon is Carbon
                         _ => get_color_for_chain_identifier(&target_chain_identifier),
                     };
 
-                    sphere_instances.push(SphereInstance {
-                        position: [atom_position_vector.x, atom_position_vector.y, atom_position_vector.z],
+                    let is_atom_currently_selected = currently_selected_atoms.contains(&(protein_identifier_name.clone(), atom_indexing_counter));
+
+                    sphere_instances_collection.push(SphereInstance {
+                        position: [atom_world_position_vector.x, atom_world_position_vector.y, atom_world_position_vector.z],
                         radius: 1.5,
-                        color: final_atom_color,
-                        _padding: 0.0,
+                        color: final_calculated_atom_color,
+                        selection_factor: if is_atom_currently_selected { 1.0 } else { 0.0 },
                     });
                 }
             }
 
-            // Generate backbone lines if needed
+            // Generate backbone backbone trace lines if needed
             if active_representation_mode == Representation::Backbone || active_representation_mode == Representation::BackboneAndSpheres {
                 let backbone_segment_collection = protein_locked_data.backbone_segments();
                 for (segment_start_position, segment_end_position, target_chain_identifier) in backbone_segment_collection {
-                    let final_segment_color = get_color_for_chain_identifier(&target_chain_identifier);
+                    let final_line_segment_color = get_color_for_chain_identifier(&target_chain_identifier);
 
-                    line_vertices.push(LineVertex {
+                    line_vertices_collection.push(LineVertex {
                         position: [segment_start_position.x, segment_start_position.y, segment_start_position.z],
-                        color: final_segment_color,
+                        color: final_line_segment_color,
                     });
-                    line_vertices.push(LineVertex {
+                    line_vertices_collection.push(LineVertex {
                         position: [segment_end_position.x, segment_end_position.y, segment_end_position.z],
-                        color: final_segment_color,
+                        color: final_line_segment_color,
                     });
                 }
             }
         }
 
-        // Update sphere buffer
-        self.sphere_count = sphere_instances.len() as u32;
-        if !sphere_instances.is_empty() {
-            let serialized_buffer_data = bytemuck::cast_slice(&sphere_instances);
-            if serialized_buffer_data.len() as u64 > self.sphere_instance_buffer.size() {
-                self.sphere_instance_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Sphere Buffer"),
-                    contents: serialized_buffer_data,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                });
-            } else {
-                self.queue.write_buffer(&self.sphere_instance_buffer, 0, serialized_buffer_data);
+        // Add measurement lines between selected atoms
+        let measurement_line_color = [1.0, 1.0, 1.0]; // Pure white for measurement lines
+        for &(first_atom_selection_index, second_atom_selection_index) in active_measurement_pairs {
+            if let (Some(first_atom_selection_handle), Some(second_atom_selection_handle)) = (currently_selected_atoms.get(first_atom_selection_index), currently_selected_atoms.get(second_atom_selection_index)) {
+                if let (Some(first_atom_world_position), Some(second_atom_world_position)) = (atom_world_positions_lookup_table.get(first_atom_selection_handle), atom_world_positions_lookup_table.get(second_atom_selection_handle)) {
+                    line_vertices_collection.push(LineVertex {
+                        position: [first_atom_world_position.x, first_atom_world_position.y, first_atom_world_position.z],
+                        color: measurement_line_color,
+                    });
+                    line_vertices_collection.push(LineVertex {
+                        position: [second_atom_world_position.x, second_atom_world_position.y, second_atom_world_position.z],
+                        color: measurement_line_color,
+                    });
+                }
             }
         }
 
-        // Update line buffer
-        self.line_vertex_count = line_vertices.len() as u32;
-        if !line_vertices.is_empty() {
-            let serialized_buffer_data = bytemuck::cast_slice(&line_vertices);
-            if serialized_buffer_data.len() as u64 > self.line_vertex_buffer.size() {
-                self.line_vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Line Buffer"),
-                    contents: serialized_buffer_data,
+        // Update GPU sphere instance buffer
+        self.sphere_count = sphere_instances_collection.len() as u32;
+        if !sphere_instances_collection.is_empty() {
+            let serialized_sphere_instance_data = bytemuck::cast_slice(&sphere_instances_collection);
+            if serialized_sphere_instance_data.len() as u64 > self.sphere_instance_buffer.size() {
+                self.sphere_instance_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Sphere Instance Buffer"),
+                    contents: serialized_sphere_instance_data,
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 });
             } else {
-                self.queue.write_buffer(&self.line_vertex_buffer, 0, serialized_buffer_data);
+                self.queue.write_buffer(&self.sphere_instance_buffer, 0, serialized_sphere_instance_data);
+            }
+        }
+
+        // Update GPU line vertex buffer
+        self.line_vertex_count = line_vertices_collection.len() as u32;
+        if !line_vertices_collection.is_empty() {
+            let serialized_line_vertex_data = bytemuck::cast_slice(&line_vertices_collection);
+            if serialized_line_vertex_data.len() as u64 > self.line_vertex_buffer.size() {
+                self.line_vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Line Vertex Buffer"),
+                    contents: serialized_line_vertex_data,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                });
+            } else {
+                self.queue.write_buffer(&self.line_vertex_buffer, 0, serialized_line_vertex_data);
             }
         }
     }
 
     /// Encodes and returns a command buffer for rendering the current frame
     pub fn render(
-        &self,
+        &mut self,
         target_texture_view: &wgpu::TextureView,
-        camera_object: &Camera,
+        camera_object_handle: &Camera,
+        text_labels_collection: &[TextLabel],
+        viewport_width: u32,
+        viewport_height: u32,
     ) -> wgpu::CommandBuffer {
-        let global_uniform_values = Uniforms {
-            view_projection_matrix: camera_object.view_projection_matrix().to_cols_array_2d(),
-            camera_world_position: camera_object.position().to_array(),
+        let global_uniform_values_structure = Uniforms {
+            view_projection_matrix: camera_object_handle.view_projection_matrix().to_cols_array_2d(),
+            camera_world_position: camera_object_handle.position().to_array(),
             _padding: 0.0,
         };
-        self.queue.write_buffer(&self.global_uniform_buffer, 0, bytemuck::bytes_of(&global_uniform_values));
+        self.queue.write_buffer(&self.global_uniform_buffer, 0, bytemuck::bytes_of(&global_uniform_values_structure));
 
-        let mut command_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
+        let mut graphics_command_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Main Render Command Encoder"),
         });
 
         {
-            let mut active_render_pass = command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
+            let mut active_render_pass = graphics_command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Protein Visualization Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target_texture_view,
                     resolve_target: None,
@@ -466,7 +535,7 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            // Draw lines first (behind spheres)
+            // Draw backbone trace lines first
             if self.line_vertex_count > 0 {
                 active_render_pass.set_pipeline(&self.line_render_pipeline);
                 active_render_pass.set_bind_group(0, &self.global_uniform_bind_group, &[]);
@@ -474,7 +543,7 @@ impl Renderer {
                 active_render_pass.draw(0..self.line_vertex_count, 0..1);
             }
 
-            // Draw spheres
+            // Draw atom spheres
             if self.sphere_count > 0 {
                 active_render_pass.set_pipeline(&self.sphere_render_pipeline);
                 active_render_pass.set_bind_group(0, &self.global_uniform_bind_group, &[]);
@@ -483,6 +552,75 @@ impl Renderer {
             }
         }
 
-        command_encoder.finish()
+        // Prepare and render UI text labels
+        let view_projection_matrix = camera_object_handle.view_projection_matrix();
+        
+        let mut combined_ui_text_string = String::new();
+        for current_text_label in text_labels_collection {
+            if current_text_label.position != glam::Vec3::ZERO {
+                let clip_space_position = view_projection_matrix * current_text_label.position.extend(1.0);
+                if clip_space_position.w > 0.0 {
+                    let normalized_device_coordinates = clip_space_position.xyz() / clip_space_position.w;
+                    if normalized_device_coordinates.x.abs() <= 1.0 && normalized_device_coordinates.y.abs() <= 1.0 && normalized_device_coordinates.z >= 0.0 && normalized_device_coordinates.z <= 1.0 {
+                        // Position on screen (placeholder logic for combined string)
+                        combined_ui_text_string.push_str(&current_text_label.text);
+                        combined_ui_text_string.push(' ');
+                    }
+                }
+            } else {
+                // Fixed UI labels
+                combined_ui_text_string.push_str(&current_text_label.text);
+                combined_ui_text_string.push('\n');
+            }
+        }
+
+        if !combined_ui_text_string.is_empty() {
+            self.text_buffer.set_text(&mut self.font_system, &combined_ui_text_string, glyphon::Attrs::new().family(glyphon::Family::SansSerif), glyphon::Shaping::Advanced);
+            self.text_buffer.shape_until_scroll(&mut self.font_system, true);
+
+            self.text_renderer.prepare(
+                &self.device,
+                &self.queue,
+                &mut self.font_system,
+                &mut self.text_atlas,
+                &self.viewport,
+                [glyphon::TextArea {
+                    buffer: &self.text_buffer,
+                    left: 20.0,
+                    top: 20.0,
+                    scale: 1.0,
+                    bounds: glyphon::TextBounds {
+                        left: 0,
+                        top: 0,
+                        right: viewport_width as i32,
+                        bottom: viewport_height as i32,
+                    },
+                    default_color: glyphon::Color::rgb(255, 255, 255),
+                    custom_glyphs: &[],
+                }],
+                &mut self.swash_cache,
+            ).unwrap();
+
+            {
+                let mut text_rendering_pass = graphics_command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Text Overlay Rendering Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target_texture_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+                self.text_renderer.render(&self.text_atlas, &self.viewport, &mut text_rendering_pass).unwrap();
+            }
+        }
+
+        graphics_command_encoder.finish()
     }
 }
