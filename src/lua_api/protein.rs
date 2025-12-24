@@ -1,7 +1,7 @@
 use mlua::UserData;
 use std::sync::{Arc, RwLock};
 
-use crate::protein::ProteinData;
+use crate::protein::{ProteinData, Representation, ColorScheme};
 
 #[derive(Clone)]
 pub struct LuaProtein {
@@ -142,6 +142,50 @@ impl UserData for LuaProtein {
             }
 
             Ok(residues_table)
+        });
+
+        // p:representation(mode) - set representation mode
+        // modes: "spheres", "backbone", "both"
+        methods.add_method_mut("representation", |_, this, mode: String| {
+            let mut protein = this.inner.write().unwrap();
+            protein.representation = match mode.to_lowercase().as_str() {
+                "spheres" | "sphere" => Representation::Spheres,
+                "backbone" | "trace" | "line" | "lines" => Representation::Backbone,
+                "both" | "all" => Representation::BackboneAndSpheres,
+                _ => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "Unknown representation: '{}'. Use 'spheres', 'backbone', or 'both'",
+                        mode
+                    )));
+                }
+            };
+            Ok(())
+        });
+
+        // p:color_by(scheme) - set color scheme
+        // schemes: "chain", "element", "bfactor", "secondary"
+        methods.add_method_mut("color_by", |_, this, scheme: String| {
+            let mut protein = this.inner.write().unwrap();
+            protein.color_scheme = match scheme.to_lowercase().as_str() {
+                "chain" | "chains" => ColorScheme::ByChain,
+                "element" | "elements" | "atom" => ColorScheme::ByElement,
+                "bfactor" | "b-factor" | "temperature" => ColorScheme::ByBFactor,
+                "secondary" | "ss" | "structure" => ColorScheme::BySecondary,
+                _ => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "Unknown color scheme: '{}'. Use 'chain', 'element', 'bfactor', or 'secondary'",
+                        scheme
+                    )));
+                }
+            };
+            Ok(())
+        });
+
+        // p:color(r, g, b) - set uniform color
+        methods.add_method_mut("color", |_, this, (r, g, b): (f32, f32, f32)| {
+            let mut protein = this.inner.write().unwrap();
+            protein.color_scheme = ColorScheme::Uniform([r, g, b]);
+            Ok(())
         });
     }
 }

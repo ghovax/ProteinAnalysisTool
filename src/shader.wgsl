@@ -7,14 +7,18 @@ struct Uniforms {
 @group(0) @binding(0)
 var<uniform> uniforms: Uniforms;
 
-struct VertexInput {
+// ============================================
+// SPHERE RENDERING (Billboard quads)
+// ============================================
+
+struct SphereInput {
     @location(0) instance_pos: vec3<f32>,
     @location(1) radius: f32,
     @location(2) color: vec3<f32>,
     @builtin(vertex_index) vertex_index: u32,
 }
 
-struct VertexOutput {
+struct SphereOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) color: vec3<f32>,
     @location(1) local_pos: vec2<f32>,
@@ -24,10 +28,10 @@ struct VertexOutput {
 }
 
 @vertex
-fn vs_main(input: VertexInput) -> VertexOutput {
-    var out: VertexOutput;
+fn vs_sphere(input: SphereInput) -> SphereOutput {
+    var out: SphereOutput;
 
-    // Billboard quad vertices (triangle strip: 0,1,2,3 -> bottom-left, bottom-right, top-left, top-right)
+    // Billboard quad vertices (triangle strip: 0,1,2,3)
     var local: vec2<f32>;
     switch input.vertex_index {
         case 0u: { local = vec2<f32>(-1.0, -1.0); }
@@ -57,7 +61,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 }
 
 @fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_sphere(input: SphereOutput) -> @location(0) vec4<f32> {
     // Discard pixels outside the sphere (circle in 2D)
     let dist_sq = input.local_pos.x * input.local_pos.x + input.local_pos.y * input.local_pos.y;
     if dist_sq > 1.0 {
@@ -82,4 +86,31 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let final_color = input.color * lighting;
 
     return vec4<f32>(final_color, 1.0);
+}
+
+// ============================================
+// LINE RENDERING (Backbone trace)
+// ============================================
+
+struct LineInput {
+    @location(0) position: vec3<f32>,
+    @location(1) color: vec3<f32>,
+}
+
+struct LineOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) color: vec3<f32>,
+}
+
+@vertex
+fn vs_line(input: LineInput) -> LineOutput {
+    var out: LineOutput;
+    out.clip_position = uniforms.view_proj * vec4<f32>(input.position, 1.0);
+    out.color = input.color;
+    return out;
+}
+
+@fragment
+fn fs_line(input: LineOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(input.color, 1.0);
 }

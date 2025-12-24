@@ -4,37 +4,31 @@
 print("=== Protein Analysis Script ===")
 
 -- Fetch a protein from the PDB
--- Try some interesting examples:
---   1AKE - Adenylate Kinase (small, good for testing)
---   1HHO - Hemoglobin
---   4HHB - Hemoglobin (larger)
---   6LU7 - SARS-CoV-2 Main Protease
-
 local protein = pdb.fetch("1AKE")
 
 -- Print basic information
 print(protein:info())
 
--- Get specific data
-local chains = protein:chains()
-print("Chain IDs:", table.concat(chains, ", "))
+-- Set representation mode
+-- Options: "spheres", "backbone", "both"
+protein:representation("both")
 
--- Get center of mass
-local cx, cy, cz = protein:center_of_mass()
-print("Center of mass:", cx, cy, cz)
+-- Set color scheme
+-- Options: "chain", "element", "bfactor", "secondary"
+protein:color_by("bfactor")
 
--- Get bounding box
-local minx, miny, minz, maxx, maxy, maxz = protein:bounding_box()
-print("Bounding box:")
-print("  Min:", minx, miny, minz)
-print("  Max:", maxx, maxy, maxz)
+-- You can also set a uniform color:
+-- protein:color(1.0, 0.5, 0.2)  -- orange
 
--- Count residues per chain
-for _, chain_id in ipairs(chains) do
-    local residues = protein:residues(chain_id)
-    local count = 0
-    for _ in pairs(residues) do count = count + 1 end
-    print("Chain " .. chain_id .. ": " .. count .. " residues")
-end
-
-print("=== Ready ===")
+print("=== Controls ===")
+print("  Mouse drag: Rotate")
+print("  Scroll: Zoom")
+print("  1: Spheres only")
+print("  2: Backbone only")
+print("  3: Both")
+print("  C: Color by chain")
+print("  B: Color by B-factor")
+print("  R: Reset camera")
+print("  Esc: Quit")
+print("")
+print("Edit scripts/init.lua to reload!")

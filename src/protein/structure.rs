@@ -5,10 +5,30 @@ use std::sync::{Arc, RwLock};
 
 use super::fetch::{fetch_pdb, load_file, FileFormat};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Representation {
+    #[default]
+    Spheres,
+    Backbone,
+    BackboneAndSpheres,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ColorScheme {
+    #[default]
+    ByChain,
+    ByElement,
+    ByBFactor,
+    BySecondary,
+    Uniform([f32; 3]),
+}
+
 pub struct ProteinData {
     pub pdb: PDB,
     pub name: String,
     pub visible: bool,
+    pub representation: Representation,
+    pub color_scheme: ColorScheme,
 }
 
 impl ProteinData {
@@ -32,6 +52,8 @@ impl ProteinData {
             pdb,
             name: name.to_string(),
             visible: true,
+            representation: Representation::default(),
+            color_scheme: ColorScheme::default(),
         })
     }
 
@@ -90,6 +112,76 @@ impl ProteinData {
                             positions.push((
                                 Vec3::new(pos.0 as f32, pos.1 as f32, pos.2 as f32),
                                 chain_id.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        positions
+    }
+
+    /// Returns backbone segments as pairs of (start, end, chain_id) for line rendering
+    pub fn backbone_segments(&self) -> Vec<(Vec3, Vec3, String)> {
+        let mut segments = Vec::new();
+
+        for chain in self.pdb.chains() {
+            let chain_id = chain.id().to_string();
+            let mut prev_ca: Option<Vec3> = None;
+
+            for residue in chain.residues() {
+                for conformer in residue.conformers() {
+                    for atom in conformer.atoms() {
+                        if atom.name() == "CA" {
+                            let pos = atom.pos();
+                            let current = Vec3::new(pos.0 as f32, pos.1 as f32, pos.2 as f32);
+
+                            if let Some(prev) = prev_ca {
+                                // Only connect if distance is reasonable (< 5 Angstroms)
+                                if prev.distance(current) < 5.0 {
+                                    segments.push((prev, current, chain_id.clone()));
+                                }
+                            }
+                            prev_ca = Some(current);
+                        }
+                    }
+                }
+            }
+        }
+
+        segments
+    }
+
+    /// Get B-factor range for coloring
+    pub fn bfactor_range(&self) -> (f32, f32) {
+        let mut min = f32::MAX;
+        let mut max = f32::MIN;
+
+        for atom in self.pdb.atoms() {
+            let bf = atom.b_factor() as f32;
+            min = min.min(bf);
+            max = max.max(bf);
+        }
+
+        (min, max)
+    }
+
+    /// Get CA atoms with their B-factors
+    pub fn ca_with_bfactor(&self) -> Vec<(Vec3, String, f32)> {
+        let mut positions = Vec::new();
+
+        for chain in self.pdb.chains() {
+            let chain_id = chain.id().to_string();
+            for residue in chain.residues() {
+                for conformer in residue.conformers() {
+                    for atom in conformer.atoms() {
+                        if atom.name() == "CA" {
+                            let pos = atom.pos();
+                            positions.push((
+                                Vec3::new(pos.0 as f32, pos.1 as f32, pos.2 as f32),
+                                chain_id.clone(),
+                                atom.b_factor() as f32,
                             ));
                         }
                     }

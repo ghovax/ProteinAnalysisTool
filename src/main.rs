@@ -13,7 +13,7 @@ use winit::{
 };
 
 use lua_api::ScriptEngine;
-use protein::ProteinStore;
+use protein::{ProteinStore, Representation, ColorScheme};
 use renderer::{Camera, Renderer};
 
 struct App {
@@ -215,7 +215,7 @@ impl App {
             if let Some((last_x, last_y)) = self.last_mouse_pos {
                 let delta_x = (position.0 - last_x) as f32 * 0.01;
                 let delta_y = (position.1 - last_y) as f32 * 0.01;
-                self.camera.rotate(-delta_x, -delta_y);
+                self.camera.rotate(-delta_x, delta_y);
             }
         }
         self.last_mouse_pos = Some(position);
@@ -243,10 +243,46 @@ impl App {
                     self.camera.focus_on(center, radius);
                 }
             }
+            // Representation modes
+            KeyCode::Digit1 => {
+                self.set_all_representation(Representation::Spheres);
+            }
+            KeyCode::Digit2 => {
+                self.set_all_representation(Representation::Backbone);
+            }
+            KeyCode::Digit3 => {
+                self.set_all_representation(Representation::BackboneAndSpheres);
+            }
+            // Color schemes
+            KeyCode::KeyC => {
+                self.set_all_color_scheme(ColorScheme::ByChain);
+            }
+            KeyCode::KeyB => {
+                self.set_all_color_scheme(ColorScheme::ByBFactor);
+            }
+            KeyCode::KeyE => {
+                self.set_all_color_scheme(ColorScheme::ByElement);
+            }
             KeyCode::Escape => {
                 std::process::exit(0);
             }
             _ => {}
+        }
+    }
+
+    fn set_all_representation(&self, repr: Representation) {
+        let store = self.store.read().unwrap();
+        for protein_arc in store.iter() {
+            let mut protein = protein_arc.write().unwrap();
+            protein.representation = repr;
+        }
+    }
+
+    fn set_all_color_scheme(&self, scheme: ColorScheme) {
+        let store = self.store.read().unwrap();
+        for protein_arc in store.iter() {
+            let mut protein = protein_arc.write().unwrap();
+            protein.color_scheme = scheme;
         }
     }
 }
