@@ -1,7 +1,7 @@
 [package]
-name = "cube_lua"
+name = "pdbx_lua_viewer"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 wgpu = "22.1"
@@ -12,4 +12,6 @@ notify = "6.1"
 crossbeam-channel = "0.5"
 glam = "0.25"
 bytemuck = { version = "1.14", features = ["derive"] }
-nom-pdb = "0.0.9"
+pdbtbx = { version = "0.12", features = ["rstar", "rayon"] }
+reqwest = { version = "0.12", features = ["blocking"] }
+rayon = "1.10"
