@@ -15,3 +15,4 @@ bytemuck = { version = "1.14", features = ["derive"] }
 pdbtbx = { version = "0.12", features = ["rstar", "rayon"] }
 reqwest = { version = "0.12", features = ["blocking"] }
 rayon = "1.10"
+glyphon = "0.5"

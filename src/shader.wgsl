@@ -1,96 +1,92 @@
 struct Uniforms {
-    view_proj: mat4x4<f32>,
-    camera_pos: vec3<f32>,
+    view_projection_matrix: mat4x4<f32>,
+    camera_world_position: vec3<f32>,
     _padding: f32,
 }
 
 @group(0) @binding(0)
-var<uniform> uniforms: Uniforms;
+var<uniform> global_uniforms: Uniforms;
 
-// ============================================
-// SPHERE RENDERING (Billboard quads)
-// ============================================
+// Sphere rendering (billboard quads)
 
 struct SphereInput {
-    @location(0) instance_pos: vec3<f32>,
+    @location(0) instance_world_position: vec3<f32>,
     @location(1) radius: f32,
     @location(2) color: vec3<f32>,
-    @builtin(vertex_index) vertex_index: u32,
+    @builtin(vertex_index) builtin_vertex_index: u32,
 }
 
 struct SphereOutput {
-    @builtin(position) clip_position: vec4<f32>,
+    @builtin(position) clip_space_position: vec4<f32>,
     @location(0) color: vec3<f32>,
-    @location(1) local_pos: vec2<f32>,
-    @location(2) world_pos: vec3<f32>,
-    @location(3) sphere_center: vec3<f32>,
+    @location(1) local_billboard_position: vec2<f32>,
+    @location(2) world_space_position: vec3<f32>,
+    @location(3) sphere_center_position: vec3<f32>,
     @location(4) radius: f32,
 }
 
 @vertex
 fn vs_sphere(input: SphereInput) -> SphereOutput {
-    var out: SphereOutput;
+    var shader_output_data: SphereOutput;
 
     // Billboard quad vertices (triangle strip: 0,1,2,3)
-    var local: vec2<f32>;
-    switch input.vertex_index {
-        case 0u: { local = vec2<f32>(-1.0, -1.0); }
-        case 1u: { local = vec2<f32>(1.0, -1.0); }
-        case 2u: { local = vec2<f32>(-1.0, 1.0); }
-        case 3u: { local = vec2<f32>(1.0, 1.0); }
-        default: { local = vec2<f32>(0.0, 0.0); }
+    var local_vertex_coordinates: vec2<f32>;
+    switch input.builtin_vertex_index {
+        case 0u: { local_vertex_coordinates = vec2<f32>(-1.0, -1.0); }
+        case 1u: { local_vertex_coordinates = vec2<f32>(1.0, -1.0); }
+        case 2u: { local_vertex_coordinates = vec2<f32>(-1.0, 1.0); }
+        case 3u: { local_vertex_coordinates = vec2<f32>(1.0, 1.0); }
+        default: { local_vertex_coordinates = vec2<f32>(0.0, 0.0); }
     }
-    out.local_pos = local;
+    shader_output_data.local_billboard_position = local_vertex_coordinates;
 
     // Calculate billboard axes (camera-facing)
-    let to_camera = normalize(uniforms.camera_pos - input.instance_pos);
-    let right = normalize(cross(vec3<f32>(0.0, 1.0, 0.0), to_camera));
-    let up = cross(to_camera, right);
+    let direction_to_camera = normalize(global_uniforms.camera_world_position - input.instance_world_position);
+    let billboard_right_vector = normalize(cross(vec3<f32>(0.0, 1.0, 0.0), direction_to_camera));
+    let billboard_up_vector = cross(direction_to_camera, billboard_right_vector);
 
     // Offset from sphere center
-    let offset = (right * local.x + up * local.y) * input.radius;
-    let world_pos = input.instance_pos + offset;
+    let vertex_world_offset = (billboard_right_vector * local_vertex_coordinates.x + billboard_up_vector * local_vertex_coordinates.y) * input.radius;
+    let world_space_position = input.instance_world_position + vertex_world_offset;
 
-    out.clip_position = uniforms.view_proj * vec4<f32>(world_pos, 1.0);
-    out.color = input.color;
-    out.world_pos = world_pos;
-    out.sphere_center = input.instance_pos;
-    out.radius = input.radius;
+    shader_output_data.clip_space_position = global_uniforms.view_projection_matrix * vec4<f32>(world_space_position, 1.0);
+    shader_output_data.color = input.color;
+    shader_output_data.world_space_position = world_space_position;
+    shader_output_data.sphere_center_position = input.instance_world_position;
+    shader_output_data.radius = input.radius;
 
-    return out;
+    return shader_output_data;
 }
 
 @fragment
 fn fs_sphere(input: SphereOutput) -> @location(0) vec4<f32> {
     // Discard pixels outside the sphere (circle in 2D)
-    let dist_sq = input.local_pos.x * input.local_pos.x + input.local_pos.y * input.local_pos.y;
-    if dist_sq > 1.0 {
+    let squared_distance_from_center = input.local_billboard_position.x * input.local_billboard_position.x + input.local_billboard_position.y * input.local_billboard_position.y;
+    if squared_distance_from_center > 1.0 {
         discard;
     }
 
     // Calculate sphere normal for lighting
-    let z = sqrt(1.0 - dist_sq);
-    let normal = vec3<f32>(input.local_pos.x, input.local_pos.y, z);
+    let surface_z_coordinate = sqrt(1.0 - squared_distance_from_center);
+    let fragment_surface_normal = vec3<f32>(input.local_billboard_position.x, input.local_billboard_position.y, surface_z_coordinate);
 
     // Simple lighting
-    let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.8));
-    let ambient = 0.3;
-    let diffuse = max(dot(normal, light_dir), 0.0) * 0.7;
+    let light_source_direction = normalize(vec3<f32>(0.5, 1.0, 0.8));
+    let ambient_lighting_factor = 0.3;
+    let diffuse_lighting_factor = max(dot(fragment_surface_normal, light_source_direction), 0.0) * 0.7;
 
     // Specular highlight
-    let view_dir = normalize(uniforms.camera_pos - input.world_pos);
-    let reflect_dir = reflect(-light_dir, normal);
-    let specular = pow(max(dot(view_dir, reflect_dir), 0.0), 32.0) * 0.3;
+    let view_direction_vector = normalize(global_uniforms.camera_world_position - input.world_space_position);
+    let reflection_direction_vector = reflect(-light_source_direction, fragment_surface_normal);
+    let specular_lighting_factor = pow(max(dot(view_direction_vector, reflection_direction_vector), 0.0), 32.0) * 0.3;
 
-    let lighting = ambient + diffuse + specular;
-    let final_color = input.color * lighting;
+    let total_lighting_intensity = ambient_lighting_factor + diffuse_lighting_factor + specular_lighting_factor;
+    let final_fragment_color = input.color * total_lighting_intensity;
 
-    return vec4<f32>(final_color, 1.0);
+    return vec4<f32>(final_fragment_color, 1.0);
 }
 
-// ============================================
-// LINE RENDERING (Backbone trace)
-// ============================================
+// Line rendering (backbone trace)
 
 struct LineInput {
     @location(0) position: vec3<f32>,
@@ -98,16 +94,16 @@ struct LineInput {
 }
 
 struct LineOutput {
-    @builtin(position) clip_position: vec4<f32>,
+    @builtin(position) clip_space_position: vec4<f32>,
     @location(0) color: vec3<f32>,
 }
 
 @vertex
 fn vs_line(input: LineInput) -> LineOutput {
-    var out: LineOutput;
-    out.clip_position = uniforms.view_proj * vec4<f32>(input.position, 1.0);
-    out.color = input.color;
-    return out;
+    var shader_output_data: LineOutput;
+    shader_output_data.clip_space_position = global_uniforms.view_projection_matrix * vec4<f32>(input.position, 1.0);
+    shader_output_data.color = input.color;
+    return shader_output_data;
 }
 
 @fragment

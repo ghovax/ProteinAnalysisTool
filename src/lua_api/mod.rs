@@ -12,106 +12,107 @@ pub struct ScriptEngine {
 }
 
 impl ScriptEngine {
-    pub fn new(store: Arc<RwLock<ProteinStore>>) -> Result<Self> {
-        let lua = Lua::new();
+    pub fn new(protein_data_store: Arc<RwLock<ProteinStore>>) -> Result<Self> {
+        let lua_runtime_instance = Lua::new();
 
         // Create pdb module
-        let pdb = lua.create_table()?;
+        let pdb_api_table = lua_runtime_instance.create_table()?;
 
-        // pdb.fetch(code) -> Protein
-        let store_clone = store.clone();
-        pdb.set(
+        // pdb.fetch(code) -> protein
+        let cloned_protein_store_reference = protein_data_store.clone();
+        pdb_api_table.set(
             "fetch",
-            lua.create_function(move |_lua, code: String| {
-                println!("Fetching PDB: {}...", code);
-                let mut store = store_clone.write().unwrap();
-                match store.fetch(&code) {
-                    Ok(protein_arc) => {
-                        let protein = protein_arc.read().unwrap();
+            lua_runtime_instance.create_function(move |_lua, requested_pdb_code: String| {
+                println!("Fetching PDB: {}...", requested_pdb_code);
+                let mut locked_protein_store = cloned_protein_store_reference.write().unwrap();
+                match locked_protein_store.fetch(&requested_pdb_code) {
+                    Ok(shared_protein_handle) => {
+                        let locked_protein_data = shared_protein_handle.read().unwrap();
                         println!(
                             "Loaded {} with {} atoms, {} chains",
-                            protein.name,
-                            protein.atom_count(),
-                            protein.chain_ids().len()
+                            locked_protein_data.name,
+                            locked_protein_data.atom_count(),
+                            locked_protein_data.chain_ids().len()
                         );
-                        drop(protein);
-                        Ok(LuaProtein::new(protein_arc.clone()))
+                        drop(locked_protein_data);
+                        Ok(LuaProtein::new(shared_protein_handle.clone()))
                     }
-                    Err(e) => Err(mlua::Error::RuntimeError(e)),
+                    Err(lua_runtime_error_message) => Err(mlua::Error::RuntimeError(lua_runtime_error_message)),
                 }
             })?,
         )?;
 
-        // pdb.load(path) -> Protein
-        let store_clone = store.clone();
-        pdb.set(
+        // Pdb.load(path) -> protein
+        let cloned_protein_store_reference = protein_data_store.clone();
+        pdb_api_table.set(
             "load",
-            lua.create_function(move |_lua, path: String| {
-                println!("Loading file: {}...", path);
-                let mut store = store_clone.write().unwrap();
-                match store.load(&path) {
-                    Ok(protein_arc) => {
-                        let protein = protein_arc.read().unwrap();
+            lua_runtime_instance.create_function(move |_lua, requested_file_path: String| {
+                println!("Loading file: {}...", requested_file_path);
+                let mut locked_protein_store = cloned_protein_store_reference.write().unwrap();
+                match locked_protein_store.load(&requested_file_path) {
+                    Ok(shared_protein_handle) => {
+                        let locked_protein_data = shared_protein_handle.read().unwrap();
                         println!(
                             "Loaded {} with {} atoms, {} chains",
-                            protein.name,
-                            protein.atom_count(),
-                            protein.chain_ids().len()
+                            locked_protein_data.name,
+                            locked_protein_data.atom_count(),
+                            locked_protein_data.chain_ids().len()
                         );
-                        drop(protein);
-                        Ok(LuaProtein::new(protein_arc.clone()))
+                        drop(locked_protein_data);
+                        Ok(LuaProtein::new(shared_protein_handle.clone()))
                     }
-                    Err(e) => Err(mlua::Error::RuntimeError(e)),
+                    Err(lua_runtime_error_message) => Err(mlua::Error::RuntimeError(lua_runtime_error_message)),
                 }
             })?,
         )?;
 
-        // pdb.list() -> table of names
-        let store_clone = store.clone();
-        pdb.set(
+        // Pdb.list() -> table of names
+        let cloned_protein_store_reference = protein_data_store.clone();
+        pdb_api_table.set(
             "list",
-            lua.create_function(move |lua, ()| {
-                let store = store_clone.read().unwrap();
-                let names = store.list();
-                lua.create_sequence_from(names)
+            lua_runtime_instance.create_function(move |lua_context, ()| {
+                let locked_protein_store = cloned_protein_store_reference.read().unwrap();
+                let available_protein_names = locked_protein_store.list();
+                lua_context.create_sequence_from(available_protein_names)
             })?,
         )?;
 
-        lua.globals().set("pdb", pdb)?;
+        lua_runtime_instance.globals().set("pdb", pdb_api_table)?;
 
         // Simple print override for cleaner output
-        lua.globals().set(
+        let _ = lua_runtime_instance.globals().set(
             "print",
-            lua.create_function(|_, args: mlua::Variadic<mlua::Value>| {
-                let output: Vec<String> = args
+            lua_runtime_instance.create_function(|_, variadic_print_arguments: mlua::Variadic<mlua::Value>| {
+                let formatted_output_strings: Vec<String> = variadic_print_arguments
                     .iter()
-                    .map(|v| match v {
+                    .map(|argument_value| match argument_value {
                         mlua::Value::Nil => "nil".to_string(),
-                        mlua::Value::Boolean(b) => b.to_string(),
-                        mlua::Value::Integer(i) => i.to_string(),
-                        mlua::Value::Number(n) => format!("{:.4}", n),
-                        mlua::Value::String(s) => s.to_str().unwrap_or("").to_string(),
-                        _ => format!("{:?}", v),
+                        mlua::Value::Boolean(boolean_value) => boolean_value.to_string(),
+                        mlua::Value::Integer(integer_value) => integer_value.to_string(),
+                        mlua::Value::Number(numeric_value) => format!("{:.4}", numeric_value),
+                        mlua::Value::String(string_value) => string_value.to_str().unwrap_or("").to_string(),
+                        _ => format!("{:?}", argument_value),
                     })
                     .collect();
-                println!("[Lua] {}", output.join("\t"));
+                println!("[Lua] {}", formatted_output_strings.join("\t"));
                 Ok(())
             })?,
-        )?;
+        );
 
-        Ok(Self { lua })
+        Ok(Self { lua: lua_runtime_instance })
     }
 
-    pub fn run_script(&self, code: &str) -> Result<()> {
-        self.lua.load(code).exec()
+    pub fn run_script(&self, lua_code_string: &str) -> Result<()> {
+        self.lua.load(lua_code_string).exec()
     }
 
-    pub fn run_file(&self, path: &str) -> Result<()> {
-        match std::fs::read_to_string(path) {
-            Ok(code) => self.run_script(&code),
-            Err(e) => Err(mlua::Error::RuntimeError(format!(
+    pub fn run_file(&self, lua_file_path: &str) -> Result<()> {
+        match std::fs::read_to_string(lua_file_path) {
+            Ok(loaded_lua_code_string) => self.run_script(&loaded_lua_code_string),
+            Err(file_read_error_message) => Err(mlua::Error::RuntimeError(format!(
                 "Failed to read {}: {}",
-                path, e
+                lua_file_path,
+                file_read_error_message
             ))),
         }
     }

@@ -1,4 +1,4 @@
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec3, Vec2};
 
 pub struct Camera {
     pub target: Vec3,
@@ -26,10 +26,10 @@ impl Camera {
     }
 
     pub fn position(&self) -> Vec3 {
-        let x = self.distance * self.pitch.cos() * self.yaw.sin();
-        let y = self.distance * self.pitch.sin();
-        let z = self.distance * self.pitch.cos() * self.yaw.cos();
-        self.target + Vec3::new(x, y, z)
+        let camera_position_x = self.distance * self.pitch.cos() * self.yaw.sin();
+        let camera_position_y = self.distance * self.pitch.sin();
+        let camera_position_z = self.distance * self.pitch.cos() * self.yaw.cos();
+        self.target + Vec3::new(camera_position_x, camera_position_y, camera_position_z)
     }
 
     pub fn view_matrix(&self) -> Mat4 {
@@ -60,5 +60,17 @@ impl Camera {
     pub fn focus_on(&mut self, center: Vec3, radius: f32) {
         self.target = center;
         self.distance = radius * 2.5;
+    }
+
+    pub fn ray_from_screen(&self, screen_coordinates: Vec2, screen_dimensions: Vec2) -> (Vec3, Vec3) {
+        let normalized_device_coordinates = Vec2::new(
+            (2.0 * screen_coordinates.x / screen_dimensions.x) - 1.0,
+            1.0 - (2.0 * screen_coordinates.y / screen_dimensions.y),
+        );
+        let inverse_view_projection_matrix = self.view_projection_matrix().inverse();
+        let near_plane_world_point = inverse_view_projection_matrix.project_point3(Vec3::new(normalized_device_coordinates.x, normalized_device_coordinates.y, -1.0));
+        let far_plane_world_point = inverse_view_projection_matrix.project_point3(Vec3::new(normalized_device_coordinates.x, normalized_device_coordinates.y, 1.0));
+        let ray_direction_vector = (far_plane_world_point - near_plane_world_point).normalize();
+        (near_plane_world_point, ray_direction_vector)
     }
 }

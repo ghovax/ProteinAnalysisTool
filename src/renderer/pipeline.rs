@@ -23,68 +23,68 @@ pub struct LineVertex {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
-    view_proj: [[f32; 4]; 4],
-    camera_pos: [f32; 3],
+    view_projection_matrix: [[f32; 4]; 4],
+    camera_world_position: [f32; 3],
     _padding: f32,
 }
 
 const CHAIN_COLORS: &[[f32; 3]] = &[
-    [0.2, 0.6, 1.0],  // Blue
-    [1.0, 0.4, 0.4],  // Red
-    [0.4, 0.9, 0.4],  // Green
-    [1.0, 0.8, 0.2],  // Yellow
-    [0.9, 0.5, 0.9],  // Magenta
-    [0.5, 0.9, 0.9],  // Cyan
-    [1.0, 0.6, 0.3],  // Orange
-    [0.7, 0.7, 0.9],  // Light purple
+    [0.2, 0.6, 1.0],  // Blue.
+    [1.0, 0.4, 0.4],  // Red.
+    [0.4, 0.9, 0.4],  // Green.
+    [1.0, 0.8, 0.2],  // Yellow.
+    [0.9, 0.5, 0.9],  // Magenta.
+    [0.5, 0.9, 0.9],  // Cyan.
+    [1.0, 0.6, 0.3],  // Orange.
+    [0.7, 0.7, 0.9],  // Light purple.
 ];
 
 const ELEMENT_COLORS: &[(&str, [f32; 3])] = &[
-    ("C", [0.5, 0.5, 0.5]),   // Carbon - gray
-    ("N", [0.2, 0.2, 1.0]),   // Nitrogen - blue
-    ("O", [1.0, 0.2, 0.2]),   // Oxygen - red
-    ("S", [1.0, 1.0, 0.2]),   // Sulfur - yellow
-    ("H", [1.0, 1.0, 1.0]),   // Hydrogen - white
-    ("P", [1.0, 0.5, 0.0]),   // Phosphorus - orange
+    ("C", [0.5, 0.5, 0.5]),   // Carbon - gray.
+    ("N", [0.2, 0.2, 1.0]),   // Nitrogen - blue.
+    ("O", [1.0, 0.2, 0.2]),   // Oxygen - red.
+    ("S", [1.0, 1.0, 0.2]),   // Sulfur - yellow.
+    ("H", [1.0, 1.0, 1.0]),   // Hydrogen - white.
+    ("P", [1.0, 0.5, 0.0]),   // Phosphorus - orange.
 ];
 
-fn get_element_color(element: &str) -> [f32; 3] {
-    for (elem, color) in ELEMENT_COLORS {
-        if *elem == element {
-            return *color;
+fn get_element_color(element_symbol: &str) -> [f32; 3] {
+    for (current_element_symbol, element_color) in ELEMENT_COLORS {
+        if *current_element_symbol == element_symbol {
+            return *element_color;
         }
     }
-    [0.8, 0.8, 0.8] // Default gray
+    [0.8, 0.8, 0.8] // Default gray.
 }
 
-fn bfactor_to_color(bfactor: f32, min: f32, max: f32) -> [f32; 3] {
-    let t = if max > min {
-        ((bfactor - min) / (max - min)).clamp(0.0, 1.0)
+fn bfactor_to_color(temperature_factor: f32, minimum_bfactor: f32, maximum_bfactor: f32) -> [f32; 3] {
+    let normalized_factor = if maximum_bfactor > minimum_bfactor {
+        ((temperature_factor - minimum_bfactor) / (maximum_bfactor - minimum_bfactor)).clamp(0.0, 1.0)
     } else {
         0.5
     };
-    // Blue (low) -> White (mid) -> Red (high)
-    if t < 0.5 {
-        let s = t * 2.0;
-        [s, s, 1.0]
+    // Blue (low) -> White (mid) -> Red (high).
+    if normalized_factor < 0.5 {
+        let interpolation_step = normalized_factor * 2.0;
+        [interpolation_step, interpolation_step, 1.0]
     } else {
-        let s = (t - 0.5) * 2.0;
-        [1.0, 1.0 - s, 1.0 - s]
+        let interpolation_step = (normalized_factor - 0.5) * 2.0;
+        [1.0, 1.0 - interpolation_step, 1.0 - interpolation_step]
     }
 }
 
 pub struct Renderer {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
-    sphere_pipeline: wgpu::RenderPipeline,
-    line_pipeline: wgpu::RenderPipeline,
-    uniform_buffer: wgpu::Buffer,
-    uniform_bind_group: wgpu::BindGroup,
-    sphere_buffer: wgpu::Buffer,
+    sphere_render_pipeline: wgpu::RenderPipeline,
+    line_render_pipeline: wgpu::RenderPipeline,
+    global_uniform_buffer: wgpu::Buffer,
+    global_uniform_bind_group: wgpu::BindGroup,
+    sphere_instance_buffer: wgpu::Buffer,
     sphere_count: u32,
-    line_buffer: wgpu::Buffer,
+    line_vertex_buffer: wgpu::Buffer,
     line_vertex_count: u32,
-    depth_texture: wgpu::TextureView,
+    depth_stencil_texture_view: wgpu::TextureView,
 }
 
 impl Renderer {
@@ -95,19 +95,19 @@ impl Renderer {
         width: u32,
         height: u32,
     ) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shader.wgsl").into()),
         });
 
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let global_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Uniform Buffer"),
             size: std::mem::size_of::<Uniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let uniform_bind_group_layout =
+        let global_uniform_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Uniform Bind Group Layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
@@ -122,27 +122,27 @@ impl Renderer {
                 }],
             });
 
-        let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let global_uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Uniform Bind Group"),
-            layout: &uniform_bind_group_layout,
+            layout: &global_uniform_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
+                resource: global_uniform_buffer.as_entire_binding(),
             }],
         });
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[&uniform_bind_group_layout],
+            bind_group_layouts: &[&global_uniform_bind_group_layout],
             push_constant_ranges: &[],
         });
 
-        // Sphere pipeline (billboard quads)
-        let sphere_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        // Sphere pipeline (billboard quads).
+        let sphere_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Sphere Pipeline"),
-            layout: Some(&pipeline_layout),
+            layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
+                module: &shader_module,
                 entry_point: "vs_sphere",
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<SphereInstance>() as u64,
@@ -168,7 +168,7 @@ impl Renderer {
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
+                module: &shader_module,
                 entry_point: "fs_sphere",
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_format,
@@ -193,12 +193,12 @@ impl Renderer {
             cache: None,
         });
 
-        // Line pipeline
-        let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        // Line pipeline.
+        let line_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Line Pipeline"),
-            layout: Some(&pipeline_layout),
+            layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &shader,
+                module: &shader_module,
                 entry_point: "vs_line",
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<LineVertex>() as u64,
@@ -219,7 +219,7 @@ impl Renderer {
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader,
+                module: &shader_module,
                 entry_point: "fs_line",
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_format,
@@ -244,34 +244,34 @@ impl Renderer {
             cache: None,
         });
 
-        let sphere_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let sphere_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Sphere Buffer"),
             size: 1024 * 1024,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let line_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let line_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Line Buffer"),
             size: 1024 * 1024,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let depth_texture = Self::create_depth_texture(&device, width, height);
+        let depth_stencil_texture_view = Self::create_depth_texture(&device, width, height);
 
         Self {
             device,
             queue,
-            sphere_pipeline,
-            line_pipeline,
-            uniform_buffer,
-            uniform_bind_group,
-            sphere_buffer,
+            sphere_render_pipeline,
+            line_render_pipeline,
+            global_uniform_buffer,
+            global_uniform_bind_group,
+            sphere_instance_buffer,
             sphere_count: 0,
-            line_buffer,
+            line_vertex_buffer,
             line_vertex_count: 0,
-            depth_texture,
+            depth_stencil_texture_view,
         }
     }
 
@@ -294,128 +294,128 @@ impl Renderer {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        self.depth_texture = Self::create_depth_texture(&self.device, width, height);
+        self.depth_stencil_texture_view = Self::create_depth_texture(&self.device, width, height);
     }
 
     pub fn update_instances(&mut self, store: &ProteinStore) {
         let mut sphere_instances = Vec::new();
         let mut line_vertices = Vec::new();
 
-        for protein_arc in store.iter() {
-            let protein = protein_arc.read().unwrap();
-            if !protein.visible {
+        for protein_shared_reference in store.iter() {
+            let protein_locked_data = protein_shared_reference.read().unwrap();
+            if !protein_locked_data.visible {
                 continue;
             }
 
-            let chain_ids: Vec<_> = protein.chain_ids();
-            let repr = protein.representation;
-            let color_scheme = protein.color_scheme;
+            let available_chain_identifiers: Vec<_> = protein_locked_data.chain_ids();
+            let active_representation_mode = protein_locked_data.representation;
+            let active_color_scheme = protein_locked_data.color_scheme;
 
-            // Get B-factor range for coloring
-            let (bf_min, bf_max) = protein.bfactor_range();
+            // Get B-factor range for coloring.
+            let (minimum_bfactor_value, maximum_bfactor_value) = protein_locked_data.bfactor_range();
 
-            // Helper to get color for a chain
-            let get_chain_color = |chain_id: &str| -> [f32; 3] {
-                match color_scheme {
+            // Helper to get color for a chain.
+            let get_color_for_chain_identifier = |chain_id: &str| -> [f32; 3] {
+                match active_color_scheme {
                     ColorScheme::ByChain => {
-                        let chain_idx = chain_ids.iter().position(|c| c == chain_id).unwrap_or(0);
+                        let chain_idx = available_chain_identifiers.iter().position(|c| c == chain_id).unwrap_or(0);
                         CHAIN_COLORS[chain_idx % CHAIN_COLORS.len()]
                     }
-                    ColorScheme::ByElement => [0.5, 0.5, 0.5], // CA is always carbon
-                    ColorScheme::ByBFactor => [0.5, 0.5, 0.5], // Will be overridden per-atom
-                    ColorScheme::BySecondary => [0.7, 0.7, 0.7], // TODO: implement
+                    ColorScheme::ByElement => [0.5, 0.5, 0.5], // CA is always carbon.
+                    ColorScheme::ByBFactor => [0.5, 0.5, 0.5], // Will be overridden per-atom.
+                    ColorScheme::BySecondary => [0.7, 0.7, 0.7], // TODO: Implement.
                     ColorScheme::Uniform(c) => c,
                 }
             };
 
-            // Generate spheres if needed
-            if repr == Representation::Spheres || repr == Representation::BackboneAndSpheres {
-                let ca_data = protein.ca_with_bfactor();
-                for (pos, chain_id, bfactor) in ca_data {
-                    let color = match color_scheme {
-                        ColorScheme::ByBFactor => bfactor_to_color(bfactor, bf_min, bf_max),
-                        _ => get_chain_color(&chain_id),
+            // Generate spheres if needed.
+            if active_representation_mode == Representation::Spheres || active_representation_mode == Representation::BackboneAndSpheres {
+                let alpha_carbon_data_collection = protein_locked_data.ca_with_bfactor();
+                for (atom_position_vector, target_chain_identifier, atom_temperature_factor) in alpha_carbon_data_collection {
+                    let final_atom_color = match active_color_scheme {
+                        ColorScheme::ByBFactor => bfactor_to_color(atom_temperature_factor, minimum_bfactor_value, maximum_bfactor_value),
+                        _ => get_color_for_chain_identifier(&target_chain_identifier),
                     };
 
                     sphere_instances.push(SphereInstance {
-                        position: [pos.x, pos.y, pos.z],
+                        position: [atom_position_vector.x, atom_position_vector.y, atom_position_vector.z],
                         radius: 1.5,
-                        color,
+                        color: final_atom_color,
                         _padding: 0.0,
                     });
                 }
             }
 
-            // Generate backbone lines if needed
-            if repr == Representation::Backbone || repr == Representation::BackboneAndSpheres {
-                let segments = protein.backbone_segments();
-                for (start, end, chain_id) in segments {
-                    let color = get_chain_color(&chain_id);
+            // Generate backbone lines if needed.
+            if active_representation_mode == Representation::Backbone || active_representation_mode == Representation::BackboneAndSpheres {
+                let backbone_segment_collection = protein_locked_data.backbone_segments();
+                for (segment_start_position, segment_end_position, target_chain_identifier) in backbone_segment_collection {
+                    let final_segment_color = get_color_for_chain_identifier(&target_chain_identifier);
 
                     line_vertices.push(LineVertex {
-                        position: [start.x, start.y, start.z],
-                        color,
+                        position: [segment_start_position.x, segment_start_position.y, segment_start_position.z],
+                        color: final_segment_color,
                     });
                     line_vertices.push(LineVertex {
-                        position: [end.x, end.y, end.z],
-                        color,
+                        position: [segment_end_position.x, segment_end_position.y, segment_end_position.z],
+                        color: final_segment_color,
                     });
                 }
             }
         }
 
-        // Update sphere buffer
+        // Update sphere buffer.
         self.sphere_count = sphere_instances.len() as u32;
         if !sphere_instances.is_empty() {
-            let data = bytemuck::cast_slice(&sphere_instances);
-            if data.len() as u64 > self.sphere_buffer.size() {
-                self.sphere_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let serialized_buffer_data = bytemuck::cast_slice(&sphere_instances);
+            if serialized_buffer_data.len() as u64 > self.sphere_instance_buffer.size() {
+                self.sphere_instance_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Sphere Buffer"),
-                    contents: data,
+                    contents: serialized_buffer_data,
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 });
             } else {
-                self.queue.write_buffer(&self.sphere_buffer, 0, data);
+                self.queue.write_buffer(&self.sphere_instance_buffer, 0, serialized_buffer_data);
             }
         }
 
-        // Update line buffer
+        // Update line buffer.
         self.line_vertex_count = line_vertices.len() as u32;
         if !line_vertices.is_empty() {
-            let data = bytemuck::cast_slice(&line_vertices);
-            if data.len() as u64 > self.line_buffer.size() {
-                self.line_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let serialized_buffer_data = bytemuck::cast_slice(&line_vertices);
+            if serialized_buffer_data.len() as u64 > self.line_vertex_buffer.size() {
+                self.line_vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Line Buffer"),
-                    contents: data,
+                    contents: serialized_buffer_data,
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 });
             } else {
-                self.queue.write_buffer(&self.line_buffer, 0, data);
+                self.queue.write_buffer(&self.line_vertex_buffer, 0, serialized_buffer_data);
             }
         }
     }
 
     pub fn render(
         &self,
-        view: &wgpu::TextureView,
-        camera: &Camera,
+        target_texture_view: &wgpu::TextureView,
+        camera_object: &Camera,
     ) -> wgpu::CommandBuffer {
-        let uniforms = Uniforms {
-            view_proj: camera.view_projection_matrix().to_cols_array_2d(),
-            camera_pos: camera.position().to_array(),
+        let global_uniform_values = Uniforms {
+            view_projection_matrix: camera_object.view_projection_matrix().to_cols_array_2d(),
+            camera_world_position: camera_object.position().to_array(),
             _padding: 0.0,
         };
-        self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        self.queue.write_buffer(&self.global_uniform_buffer, 0, bytemuck::bytes_of(&global_uniform_values));
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        let mut command_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
 
         {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut active_render_pass = command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
+                    view: target_texture_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -428,7 +428,7 @@ impl Renderer {
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_texture,
+                    view: &self.depth_stencil_texture_view,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -439,23 +439,23 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            // Draw lines first (behind spheres)
+            // Draw lines first (behind spheres).
             if self.line_vertex_count > 0 {
-                render_pass.set_pipeline(&self.line_pipeline);
-                render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.line_buffer.slice(..));
-                render_pass.draw(0..self.line_vertex_count, 0..1);
+                active_render_pass.set_pipeline(&self.line_render_pipeline);
+                active_render_pass.set_bind_group(0, &self.global_uniform_bind_group, &[]);
+                active_render_pass.set_vertex_buffer(0, self.line_vertex_buffer.slice(..));
+                active_render_pass.draw(0..self.line_vertex_count, 0..1);
             }
 
-            // Draw spheres
+            // Draw spheres.
             if self.sphere_count > 0 {
-                render_pass.set_pipeline(&self.sphere_pipeline);
-                render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, self.sphere_buffer.slice(..));
-                render_pass.draw(0..4, 0..self.sphere_count);
+                active_render_pass.set_pipeline(&self.sphere_render_pipeline);
+                active_render_pass.set_bind_group(0, &self.global_uniform_bind_group, &[]);
+                active_render_pass.set_vertex_buffer(0, self.sphere_instance_buffer.slice(..));
+                active_render_pass.draw(0..4, 0..self.sphere_count);
             }
         }
 
-        encoder.finish()
+        command_encoder.finish()
     }
 }
