@@ -1,3 +1,8 @@
+//! Lua scripting engine for protein manipulation
+//!
+//! This module provides the `ScriptEngine` which embeds a Lua interpreter
+//! and exposes an API for fetching, loading, and inspecting protein structures
+
 mod protein;
 
 use mlua::{Lua, Result};
@@ -7,18 +12,20 @@ use crate::protein::ProteinStore;
 
 pub use protein::LuaProtein;
 
+/// The Lua script engine
 pub struct ScriptEngine {
     lua: Lua,
 }
 
 impl ScriptEngine {
+    /// Creates a new `ScriptEngine` and initializes the `pdb` global API table
     pub fn new(protein_data_store: Arc<RwLock<ProteinStore>>) -> Result<Self> {
         let lua_runtime_instance = Lua::new();
 
         // Create pdb module
         let pdb_api_table = lua_runtime_instance.create_table()?;
 
-        // pdb.fetch(code) -> protein
+        // pdb.fetch(code) fetches a protein from RCSB by its PDB identifier
         let cloned_protein_store_reference = protein_data_store.clone();
         pdb_api_table.set(
             "fetch",
@@ -42,7 +49,7 @@ impl ScriptEngine {
             })?,
         )?;
 
-        // Pdb.load(path) -> protein
+        // pdb.load(path) loads a protein from a local file (PDB or mmCIF)
         let cloned_protein_store_reference = protein_data_store.clone();
         pdb_api_table.set(
             "load",
@@ -66,7 +73,7 @@ impl ScriptEngine {
             })?,
         )?;
 
-        // Pdb.list() -> table of names
+        // pdb.list() returns a table of names for all currently loaded protein identifiers
         let cloned_protein_store_reference = protein_data_store.clone();
         pdb_api_table.set(
             "list",
@@ -102,10 +109,12 @@ impl ScriptEngine {
         Ok(Self { lua: lua_runtime_instance })
     }
 
+    /// Executes a string as Lua code
     pub fn run_script(&self, lua_code_string: &str) -> Result<()> {
         self.lua.load(lua_code_string).exec()
     }
 
+    /// Reads a file and executes its content as Lua code
     pub fn run_file(&self, lua_file_path: &str) -> Result<()> {
         match std::fs::read_to_string(lua_file_path) {
             Ok(loaded_lua_code_string) => self.run_script(&loaded_lua_code_string),
@@ -117,3 +126,5 @@ impl ScriptEngine {
         }
     }
 }
+
+

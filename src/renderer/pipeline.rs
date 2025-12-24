@@ -1,69 +1,90 @@
+//! WGPU renderer implementation for protein visualization
+//!
+//! This module handles the creation of render pipelines, management of GPU buffers,
+//! and the actual drawing of protein structures (spheres and lines)
+
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 use super::Camera;
 use crate::protein::{ProteinStore, Representation, ColorScheme};
 
+/// Instance data for rendering a sphere (atom)
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SphereInstance {
+    /// Position of the sphere in world space
     pub position: [f32; 3],
+    /// Radius of the sphere
     pub radius: f32,
+    /// Color of the sphere (RGB)
     pub color: [f32; 3],
+    /// Explicit padding for alignment
     pub _padding: f32,
 }
 
+/// Vertex data for rendering a line (backbone)
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct LineVertex {
+    /// Position of the vertex in world space
     pub position: [f32; 3],
+    /// Color of the vertex (RGB)
     pub color: [f32; 3],
 }
 
+/// Global uniforms shared across all shaders
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
+    /// Combined view and projection matrix
     view_projection_matrix: [[f32; 4]; 4],
+    /// World position of the camera
     camera_world_position: [f32; 3],
+    /// Explicit padding for alignment
     _padding: f32,
 }
 
+/// Default colors for protein chains
 const CHAIN_COLORS: &[[f32; 3]] = &[
-    [0.2, 0.6, 1.0],  // Blue.
-    [1.0, 0.4, 0.4],  // Red.
-    [0.4, 0.9, 0.4],  // Green.
-    [1.0, 0.8, 0.2],  // Yellow.
-    [0.9, 0.5, 0.9],  // Magenta.
-    [0.5, 0.9, 0.9],  // Cyan.
-    [1.0, 0.6, 0.3],  // Orange.
-    [0.7, 0.7, 0.9],  // Light purple.
+    [0.2, 0.6, 1.0],  // Blue
+    [1.0, 0.4, 0.4],  // Red
+    [0.4, 0.9, 0.4],  // Green
+    [1.0, 0.8, 0.2],  // Yellow
+    [0.9, 0.5, 0.9],  // Magenta
+    [0.5, 0.9, 0.9],  // Cyan
+    [1.0, 0.6, 0.3],  // Orange
+    [0.7, 0.7, 0.9],  // Light purple
 ];
 
+/// Colors assigned to chemical elements
 const ELEMENT_COLORS: &[(&str, [f32; 3])] = &[
-    ("C", [0.5, 0.5, 0.5]),   // Carbon - gray.
-    ("N", [0.2, 0.2, 1.0]),   // Nitrogen - blue.
-    ("O", [1.0, 0.2, 0.2]),   // Oxygen - red.
-    ("S", [1.0, 1.0, 0.2]),   // Sulfur - yellow.
-    ("H", [1.0, 1.0, 1.0]),   // Hydrogen - white.
-    ("P", [1.0, 0.5, 0.0]),   // Phosphorus - orange.
+    ("C", [0.5, 0.5, 0.5]),   // Carbon - gray
+    ("N", [0.2, 0.2, 1.0]),   // Nitrogen - blue
+    ("O", [1.0, 0.2, 0.2]),   // Oxygen - red
+    ("S", [1.0, 1.0, 0.2]),   // Sulfur - yellow
+    ("H", [1.0, 1.0, 1.0]),   // Hydrogen - white
+    ("P", [1.0, 0.5, 0.0]),   // Phosphorus - orange
 ];
 
+/// Returns the color associated with a given element symbol
 fn get_element_color(element_symbol: &str) -> [f32; 3] {
     for (current_element_symbol, element_color) in ELEMENT_COLORS {
         if *current_element_symbol == element_symbol {
             return *element_color;
         }
     }
-    [0.8, 0.8, 0.8] // Default gray.
+    [0.8, 0.8, 0.8] // Default gray
 }
 
+/// Maps a B-factor value to a color using a Blue-White-Red gradient
 fn bfactor_to_color(temperature_factor: f32, minimum_bfactor: f32, maximum_bfactor: f32) -> [f32; 3] {
     let normalized_factor = if maximum_bfactor > minimum_bfactor {
         ((temperature_factor - minimum_bfactor) / (maximum_bfactor - minimum_bfactor)).clamp(0.0, 1.0)
     } else {
         0.5
     };
-    // Blue (low) -> White (mid) -> Red (high).
+    // Blue (low) -> White (mid) -> Red (high)
     if normalized_factor < 0.5 {
         let interpolation_step = normalized_factor * 2.0;
         [interpolation_step, interpolation_step, 1.0]
@@ -73,6 +94,7 @@ fn bfactor_to_color(temperature_factor: f32, minimum_bfactor: f32, maximum_bfact
     }
 }
 
+/// The main protein renderer
 pub struct Renderer {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
@@ -88,6 +110,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    /// Creates a new `Renderer` with initialized GPU pipelines
     pub fn new(
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
@@ -137,7 +160,7 @@ impl Renderer {
             push_constant_ranges: &[],
         });
 
-        // Sphere pipeline (billboard quads).
+        // Sphere pipeline (billboard quads)
         let sphere_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Sphere Pipeline"),
             layout: Some(&render_pipeline_layout),
@@ -193,7 +216,7 @@ impl Renderer {
             cache: None,
         });
 
-        // Line pipeline.
+        // Line pipeline
         let line_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Line Pipeline"),
             layout: Some(&render_pipeline_layout),
@@ -275,6 +298,7 @@ impl Renderer {
         }
     }
 
+    /// Internal helper to create the depth texture for Z-buffering
     fn create_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Depth Texture"),
@@ -293,10 +317,12 @@ impl Renderer {
         texture.create_view(&wgpu::TextureViewDescriptor::default())
     }
 
+    /// Resizes the depth texture when the window is resized
     pub fn resize(&mut self, width: u32, height: u32) {
         self.depth_stencil_texture_view = Self::create_depth_texture(&self.device, width, height);
     }
 
+    /// Updates the GPU buffers with the latest protein instance data
     pub fn update_instances(&mut self, store: &ProteinStore) {
         let mut sphere_instances = Vec::new();
         let mut line_vertices = Vec::new();
@@ -311,24 +337,24 @@ impl Renderer {
             let active_representation_mode = protein_locked_data.representation;
             let active_color_scheme = protein_locked_data.color_scheme;
 
-            // Get B-factor range for coloring.
+            // Get B-factor range for coloring
             let (minimum_bfactor_value, maximum_bfactor_value) = protein_locked_data.bfactor_range();
 
-            // Helper to get color for a chain.
+            // Helper to get color for a chain
             let get_color_for_chain_identifier = |chain_id: &str| -> [f32; 3] {
                 match active_color_scheme {
                     ColorScheme::ByChain => {
                         let chain_idx = available_chain_identifiers.iter().position(|c| c == chain_id).unwrap_or(0);
                         CHAIN_COLORS[chain_idx % CHAIN_COLORS.len()]
                     }
-                    ColorScheme::ByElement => [0.5, 0.5, 0.5], // CA is always carbon.
-                    ColorScheme::ByBFactor => [0.5, 0.5, 0.5], // Will be overridden per-atom.
-                    ColorScheme::BySecondary => [0.7, 0.7, 0.7], // TODO: Implement.
+                    ColorScheme::ByElement => [0.5, 0.5, 0.5], // CA is always carbon
+                    ColorScheme::ByBFactor => [0.5, 0.5, 0.5], // Will be overridden per-atom
+                    ColorScheme::BySecondary => [0.7, 0.7, 0.7], // TODO: Implement
                     ColorScheme::Uniform(c) => c,
                 }
             };
 
-            // Generate spheres if needed.
+            // Generate spheres if needed
             if active_representation_mode == Representation::Spheres || active_representation_mode == Representation::BackboneAndSpheres {
                 let alpha_carbon_data_collection = protein_locked_data.ca_with_bfactor();
                 for (atom_position_vector, target_chain_identifier, atom_temperature_factor) in alpha_carbon_data_collection {
@@ -346,7 +372,7 @@ impl Renderer {
                 }
             }
 
-            // Generate backbone lines if needed.
+            // Generate backbone lines if needed
             if active_representation_mode == Representation::Backbone || active_representation_mode == Representation::BackboneAndSpheres {
                 let backbone_segment_collection = protein_locked_data.backbone_segments();
                 for (segment_start_position, segment_end_position, target_chain_identifier) in backbone_segment_collection {
@@ -364,7 +390,7 @@ impl Renderer {
             }
         }
 
-        // Update sphere buffer.
+        // Update sphere buffer
         self.sphere_count = sphere_instances.len() as u32;
         if !sphere_instances.is_empty() {
             let serialized_buffer_data = bytemuck::cast_slice(&sphere_instances);
@@ -379,7 +405,7 @@ impl Renderer {
             }
         }
 
-        // Update line buffer.
+        // Update line buffer
         self.line_vertex_count = line_vertices.len() as u32;
         if !line_vertices.is_empty() {
             let serialized_buffer_data = bytemuck::cast_slice(&line_vertices);
@@ -395,6 +421,7 @@ impl Renderer {
         }
     }
 
+    /// Encodes and returns a command buffer for rendering the current frame
     pub fn render(
         &self,
         target_texture_view: &wgpu::TextureView,
@@ -439,7 +466,7 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            // Draw lines first (behind spheres).
+            // Draw lines first (behind spheres)
             if self.line_vertex_count > 0 {
                 active_render_pass.set_pipeline(&self.line_render_pipeline);
                 active_render_pass.set_bind_group(0, &self.global_uniform_bind_group, &[]);
@@ -447,7 +474,7 @@ impl Renderer {
                 active_render_pass.draw(0..self.line_vertex_count, 0..1);
             }
 
-            // Draw spheres.
+            // Draw spheres
             if self.sphere_count > 0 {
                 active_render_pass.set_pipeline(&self.sphere_render_pipeline);
                 active_render_pass.set_bind_group(0, &self.global_uniform_bind_group, &[]);

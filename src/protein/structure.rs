@@ -1,3 +1,9 @@
+//! Internal representation and management of protein structures
+//!
+//! This module defines the core data structures for proteins, including
+//! atomic positions, connectivity, and metadata, as well as the `ProteinStore`
+//! for managing multiple loaded proteins
+
 use glam::Vec3;
 use pdbtbx::{PDB, ReadOptions, Format};
 use std::collections::HashMap;
@@ -5,33 +11,50 @@ use std::sync::{Arc, RwLock};
 
 use super::fetch::{fetch_pdb, load_file, FileFormat};
 
+/// The available visual representation modes for a protein
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Representation {
+    /// Each atom (or CA) is rendered as a sphere
     #[default]
     Spheres,
+    /// Only the backbone trace is rendered as a series of lines
     Backbone,
+    /// Both the backbone trace and spheres are rendered
     BackboneAndSpheres,
 }
 
+/// The available color schemes for a protein
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum ColorScheme {
+    /// Color by chain identifier
     #[default]
     ByChain,
+    /// Color by chemical element
     ByElement,
+    /// Color by B-factor (temperature factor)
     ByBFactor,
+    /// Color by secondary structure (alpha helix, beta sheet, etc)
     BySecondary,
+    /// Use a single uniform color
     Uniform([f32; 3]),
 }
 
+/// Core data structure containing parsed protein information and rendering state
 pub struct ProteinData {
+    /// The underlying PDB data structure from `pdbtbx`
     pub pdb: PDB,
+    /// Display name of the protein
     pub name: String,
+    /// Whether the protein should be rendered
     pub visible: bool,
+    /// The current representation mode
     pub representation: Representation,
+    /// The current color scheme
     pub color_scheme: ColorScheme,
 }
 
 impl ProteinData {
+    /// Parses a protein structure from a string in the specified format
     pub fn from_string(file_content_string: &str, name: &str, format: FileFormat) -> Result<Self, String> {
         let target_file_format = match format {
             FileFormat::Pdb => Format::Pdb,
@@ -57,10 +80,12 @@ impl ProteinData {
         })
     }
 
+    /// Returns the total number of atoms in the structure
     pub fn atom_count(&self) -> usize {
         self.pdb.atom_count()
     }
 
+    /// Returns a list of all chain identifiers
     pub fn chain_ids(&self) -> Vec<String> {
         self.pdb
             .chains()
@@ -68,6 +93,7 @@ impl ProteinData {
             .collect()
     }
 
+    /// Calculates the geometric center of mass of all atoms
     pub fn center_of_mass(&self) -> Vec3 {
         let mut position_sum_vector = Vec3::ZERO;
         let mut atom_counting_index = 0;
@@ -85,6 +111,7 @@ impl ProteinData {
         }
     }
 
+    /// Calculates the axis-aligned bounding box (min, max) of all atoms
     pub fn bounding_box(&self) -> (Vec3, Vec3) {
         let mut minimum_coordinate_bound = Vec3::splat(f32::MAX);
         let mut maximum_coordinate_bound = Vec3::splat(f32::MIN);
@@ -99,6 +126,7 @@ impl ProteinData {
         (minimum_coordinate_bound, maximum_coordinate_bound)
     }
 
+    /// Returns the positions and chain IDs of all Alpha Carbon (CA) atoms
     pub fn ca_positions(&self) -> Vec<(Vec3, String)> {
         let mut alpha_carbon_positions_collection = Vec::new();
 
@@ -153,7 +181,7 @@ impl ProteinData {
         backbone_segment_collection
     }
 
-    /// Get B-factor range for coloring
+    /// Returns the minimum and maximum B-factor values in the structure
     pub fn bfactor_range(&self) -> (f32, f32) {
         let mut minimum_bfactor_value = f32::MAX;
         let mut maximum_bfactor_value = f32::MIN;
@@ -167,7 +195,7 @@ impl ProteinData {
         (minimum_bfactor_value, maximum_bfactor_value)
     }
 
-    /// Get CA atoms with their B-factors
+    /// Returns Alpha Carbon (CA) atoms with their associated B-factors and chain IDs
     pub fn ca_with_bfactor(&self) -> Vec<(Vec3, String, f32)> {
         let mut alpha_carbon_bfactor_collection = Vec::new();
 
@@ -193,17 +221,20 @@ impl ProteinData {
     }
 }
 
+/// A central repository for managing multiple loaded proteins
 pub struct ProteinStore {
     proteins: HashMap<String, Arc<RwLock<ProteinData>>>,
 }
 
 impl ProteinStore {
+    /// Creates a new empty `ProteinStore`
     pub fn new() -> Self {
         Self {
             proteins: HashMap::new(),
         }
     }
 
+    /// Fetches a protein from the RCSB repository by ID and stores it
     pub fn fetch(&mut self, pdb_identifier_code: &str) -> Result<Arc<RwLock<ProteinData>>, String> {
         let pdb_identifier_code = pdb_identifier_code.to_uppercase();
 
@@ -218,6 +249,7 @@ impl ProteinStore {
         Ok(shared_protein_handle)
     }
 
+    /// Loads a protein from a local file system path and stores it
     pub fn load(&mut self, file_system_path: &str) -> Result<Arc<RwLock<ProteinData>>, String> {
         let extracted_protein_name = std::path::Path::new(file_system_path)
             .file_stem()
@@ -236,10 +268,12 @@ impl ProteinStore {
         Ok(shared_protein_handle)
     }
 
+    /// Returns a list of all loaded protein identifiers
     pub fn list(&self) -> Vec<String> {
         self.proteins.keys().cloned().collect()
     }
 
+    /// Returns an iterator over all loaded protein handles
     pub fn iter(&self) -> impl Iterator<Item = &Arc<RwLock<ProteinData>>> {
         self.proteins.values()
     }

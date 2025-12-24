@@ -1,17 +1,32 @@
+//! Interactive 3D camera for protein visualization
+//!
+//! This module provides a spherical coordinate camera system that supports
+//! orbiting, zooming, and focusing on specific points in 3D space
+
 use glam::{Mat4, Vec3, Vec2};
 
+/// A 3D camera using spherical coordinates
 pub struct Camera {
+    /// The point the camera is looking at
     pub target: Vec3,
+    /// Distance from the target
     pub distance: f32,
-    pub yaw: f32,   // Horizontal rotation (radians)
-    pub pitch: f32, // Vertical rotation (radians)
+    /// Horizontal rotation in radians
+    pub yaw: f32,
+    /// Vertical rotation in radians
+    pub pitch: f32,
+    /// Field of view in radians
     pub fov: f32,
+    /// Aspect ratio (width / height)
     pub aspect: f32,
+    /// Near clipping plane
     pub near: f32,
+    /// Far clipping plane
     pub far: f32,
 }
 
 impl Camera {
+    /// Creates a new camera with default orientation and the specified aspect ratio
     pub fn new(aspect: f32) -> Self {
         Self {
             target: Vec3::ZERO,
@@ -25,6 +40,7 @@ impl Camera {
         }
     }
 
+    /// Calculates the world-space position of the camera
     pub fn position(&self) -> Vec3 {
         let camera_position_x = self.distance * self.pitch.cos() * self.yaw.sin();
         let camera_position_y = self.distance * self.pitch.sin();
@@ -32,36 +48,44 @@ impl Camera {
         self.target + Vec3::new(camera_position_x, camera_position_y, camera_position_z)
     }
 
+    /// Returns the view matrix
     pub fn view_matrix(&self) -> Mat4 {
         Mat4::look_at_rh(self.position(), self.target, Vec3::Y)
     }
 
+    /// Returns the perspective projection matrix
     pub fn projection_matrix(&self) -> Mat4 {
         Mat4::perspective_rh(self.fov, self.aspect, self.near, self.far)
     }
 
+    /// Returns the combined view-projection matrix
     pub fn view_projection_matrix(&self) -> Mat4 {
         self.projection_matrix() * self.view_matrix()
     }
 
+    /// Rotates the camera by the given yaw and pitch deltas
     pub fn rotate(&mut self, delta_yaw: f32, delta_pitch: f32) {
         self.yaw += delta_yaw;
         self.pitch = (self.pitch + delta_pitch).clamp(-1.5, 1.5);
     }
 
+    /// Adjusts the camera distance (zoom) based on the given delta
     pub fn zoom(&mut self, delta: f32) {
         self.distance = (self.distance * (1.0 - delta * 0.1)).clamp(1.0, 500.0);
     }
 
+    /// Sets the camera's aspect ratio
     pub fn set_aspect(&mut self, aspect: f32) {
         self.aspect = aspect;
     }
 
+    /// Focuses the camera on a specific center point and adjusts distance based on radius
     pub fn focus_on(&mut self, center: Vec3, radius: f32) {
         self.target = center;
         self.distance = radius * 2.5;
     }
 
+    /// Generates a ray in world space from screen coordinates
     pub fn ray_from_screen(&self, screen_coordinates: Vec2, screen_dimensions: Vec2) -> (Vec3, Vec3) {
         let normalized_device_coordinates = Vec2::new(
             (2.0 * screen_coordinates.x / screen_dimensions.x) - 1.0,

@@ -1,3 +1,8 @@
+//! Main entry point for the Protein Viewer application
+//!
+//! This module coordinates the interaction between the WGPU renderer,
+//! the Lua script engine, and the protein data store
+
 mod lua_api;
 mod protein;
 mod renderer;
@@ -16,26 +21,38 @@ use lua_api::ScriptEngine;
 use protein::{ProteinStore, Representation, ColorScheme};
 use renderer::{Camera, Renderer};
 
+/// The main application state
 struct App {
+    /// WGPU surface for rendering
     surface: wgpu::Surface<'static>,
+    /// The GPU device handle
     device: Arc<wgpu::Device>,
+    /// The GPU command queue
     queue: Arc<wgpu::Queue>,
+    /// Current surface configuration
     config: wgpu::SurfaceConfiguration,
+    /// The protein renderer
     renderer: Renderer,
+    /// The interactive camera
     camera: Camera,
+    /// The Lua script engine for automation
     script_engine: ScriptEngine,
+    /// The shared store containing all loaded proteins
     store: Arc<RwLock<ProteinStore>>,
 
-    // Input state.
+    /// Whether the left mouse button is currently pressed
     mouse_pressed: bool,
+    /// The last recorded mouse position for rotation calculations
     last_mouse_pos: Option<(f64, f64)>,
 
-    // Script hot-reload.
+    /// Receiver for script hot-reload notifications
     script_rx: crossbeam_channel::Receiver<PathBuf>,
+    /// The file system watcher for scripts
     _watcher: notify::RecommendedWatcher,
 }
 
 impl App {
+    /// Initializes a new instance of the application
     async fn new(main_window: Arc<winit::window::Window>) -> Self {
         let window_inner_size = main_window.inner_size();
         let wgpu_instance = wgpu::Instance::default();
@@ -90,7 +107,7 @@ impl App {
         let protein_data_store = Arc::new(RwLock::new(ProteinStore::new()));
         let lua_script_engine = ScriptEngine::new(protein_data_store.clone()).expect("Failed to create Lua engine");
 
-        // Set up file watcher for hot-reload.
+        // Set up file watcher for hot-reload
         let (script_path_sender, script_path_receiver) = crossbeam_channel::unbounded::<PathBuf>();
         let mut file_system_watcher =
             notify::recommended_watcher(move |watcher_result: notify::Result<notify::Event>| {
@@ -106,7 +123,7 @@ impl App {
             })
             .expect("Failed to create watcher");
 
-        // Watch scripts directory and current directory.
+        // Watch scripts directory and current directory
         let _ = file_system_watcher.watch(
             std::path::Path::new("scripts"),
             notify::RecursiveMode::Recursive,
@@ -116,7 +133,7 @@ impl App {
             notify::RecursiveMode::NonRecursive,
         );
 
-        // Run initial script.
+        // Run initial script
         if std::path::Path::new("scripts/init.lua").exists() {
             if let Err(script_error_message) = lua_script_engine.run_file("scripts/init.lua") {
                 eprintln!("Script error: {}", script_error_message);
@@ -143,6 +160,7 @@ impl App {
         }
     }
 
+    /// Resizes the application surface and updates the renderer and camera
     fn resize(&mut self, physical_window_size: winit::dpi::PhysicalSize<u32>) {
         if physical_window_size.width > 0 && physical_window_size.height > 0 {
             self.config.width = physical_window_size.width;
@@ -154,8 +172,9 @@ impl App {
         }
     }
 
+    /// Updates the application state, including script hot-reloads and camera focus
     fn update(&mut self) {
-        // Check for script hot-reload.
+        // Check for script hot-reload
         while let Ok(reloaded_script_path) = self.script_rx.try_recv() {
             println!("Reloading: {:?}", reloaded_script_path);
             if let Some(reloaded_script_path_string) = reloaded_script_path.to_str() {
@@ -165,13 +184,13 @@ impl App {
             }
         }
 
-        // Update renderer with current protein data.
+        // Update renderer with current protein data
         {
             let locked_protein_store = self.store.read().unwrap();
             self.renderer.update_instances(&locked_protein_store);
         }
 
-        // Auto-focus camera on first protein if we haven't moved it.
+        // Auto-focus camera on first protein if we haven't moved it
         if self.camera.target == glam::Vec3::ZERO {
             let locked_protein_store = self.store.read().unwrap();
             let optional_first_protein_entry = locked_protein_store.iter().next().cloned();
@@ -188,6 +207,7 @@ impl App {
         }
     }
 
+    /// Renders the current frame to the surface
     fn render(&self) -> Result<(), wgpu::SurfaceError> {
         let surface_texture = self.surface.get_current_texture()?;
         let texture_view = surface_texture
@@ -201,6 +221,7 @@ impl App {
         Ok(())
     }
 
+    /// Handles mouse button input events
     fn handle_mouse_input(&mut self, element_press_state: ElementState, mouse_button_identifier: MouseButton) {
         if mouse_button_identifier == MouseButton::Left {
             self.mouse_pressed = element_press_state == ElementState::Pressed;
@@ -210,6 +231,7 @@ impl App {
         }
     }
 
+    /// Handles cursor movement events for camera rotation
     fn handle_mouse_move(&mut self, cursor_screen_position: (f64, f64)) {
         if self.mouse_pressed {
             if let Some((previous_mouse_x, previous_mouse_y)) = self.last_mouse_pos {
@@ -221,14 +243,16 @@ impl App {
         self.last_mouse_pos = Some(cursor_screen_position);
     }
 
+    /// Handles mouse scroll events for camera zoom
     fn handle_scroll(&mut self, scroll_delta_value: f32) {
         self.camera.zoom(scroll_delta_value);
     }
 
+    /// Handles keyboard input events for various shortcuts
     fn handle_key(&mut self, pressed_physical_keycode: KeyCode) {
         match pressed_physical_keycode {
             KeyCode::KeyR => {
-                // Reset camera.
+                // Reset camera
                 self.camera = Camera::new(self.config.width as f32 / self.config.height as f32);
                 let locked_protein_store = self.store.read().unwrap();
                 let optional_first_protein_entry = locked_protein_store.iter().next().cloned();
@@ -243,7 +267,7 @@ impl App {
                     self.camera.focus_on(protein_center_of_mass, bounding_sphere_radius);
                 }
             }
-            // Representation modes.
+            // Representation modes
             KeyCode::Digit1 => {
                 self.set_all_representation(Representation::Spheres);
             }
@@ -253,7 +277,7 @@ impl App {
             KeyCode::Digit3 => {
                 self.set_all_representation(Representation::BackboneAndSpheres);
             }
-            // Color schemes.
+            // Color schemes
             KeyCode::KeyC => {
                 self.set_all_color_scheme(ColorScheme::ByChain);
             }
@@ -270,6 +294,7 @@ impl App {
         }
     }
 
+    /// Sets the representation mode for all loaded proteins
     fn set_all_representation(&self, target_representation_mode: Representation) {
         let locked_protein_store = self.store.read().unwrap();
         for protein_shared_handle in locked_protein_store.iter() {
@@ -278,6 +303,7 @@ impl App {
         }
     }
 
+    /// Sets the color scheme for all loaded proteins
     fn set_all_color_scheme(&self, target_color_scheme: ColorScheme) {
         let locked_protein_store = self.store.read().unwrap();
         for protein_shared_handle in locked_protein_store.iter() {
@@ -287,6 +313,9 @@ impl App {
     }
 }
 
+
+
+/// The main application event loop
 async fn run() {
     let main_event_loop = EventLoop::new().unwrap();
     let application_window = Arc::new(
@@ -345,16 +374,7 @@ async fn run() {
     });
 }
 
+/// Application entry point
 fn main() {
-    println!("Protein viewer.");
-    println!("Controls:");
-    println!("  Mouse drag: Rotate.");
-    println!("  Scroll: Zoom.");
-    println!("  R: Reset camera.");
-    println!("  Esc: Quit.");
-    println!();
-    println!("Looking for scripts/init.lua or init.lua...");
-    println!();
-
     pollster::block_on(run());
 }

@@ -1,16 +1,31 @@
+//! Utilities for fetching protein data from remote and local sources
+//!
+//! This module handles downloading PDB/mmCIF files from RCSB and reading
+//! them from the local file system
+
 const RCSB_BASE_URL: &str = "https://files.rcsb.org/download";
 
+/// Supported protein file formats
 #[derive(Clone, Copy, Debug)]
 pub enum FileFormat {
+    /// Protein Data Bank format (.pdb)
     Pdb,
+    /// Macromolecular Crystallographic Information File format (.cif)
     Cif,
 }
 
+/// The result of a fetch or load operation
 pub struct FetchResult {
+    /// The raw string content of the file
     pub content: String,
+    /// The detected or specified format of the file
     pub format: FileFormat,
 }
 
+/// Fetches a protein structure from RCSB by its PDB ID
+///
+/// This function first attempts to download the mmCIF version, and falls back
+/// to the PDB version if mmCIF is not available
 pub fn fetch_pdb(pdb_identifier_code: &str) -> Result<FetchResult, String> {
     let pdb_identifier_code = pdb_identifier_code.to_uppercase();
 
@@ -33,6 +48,10 @@ pub fn fetch_pdb(pdb_identifier_code: &str) -> Result<FetchResult, String> {
     Err(format!("Failed to fetch PDB code '{}' from RCSB", pdb_identifier_code))
 }
 
+/// Loads a protein structure from the local file system
+///
+/// The format is determined based on the file extension (.cif and .mmcif are
+/// treated as CIF, everything else as PDB)
 pub fn load_file(file_system_path: &str) -> Result<FetchResult, String> {
     let loaded_file_content = std::fs::read_to_string(file_system_path)
         .map_err(|file_system_read_error| format!("Failed to read file '{}': {}", file_system_path, file_system_read_error))?;
