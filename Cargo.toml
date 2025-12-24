@@ -1,0 +1,15 @@
+[package]
+name = "cube_lua"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+wgpu = "22.1"
+winit = "0.29"
+pollster = "0.3"
+mlua = { version = "0.9", features = ["lua54", "vendored"] }
+notify = "6.1"
+crossbeam-channel = "0.5"
+glam = "0.25"
+bytemuck = { version = "1.14", features = ["derive"] }
+nom-pdb = "0.0.9"
