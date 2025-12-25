@@ -1141,9 +1141,12 @@ impl Renderer {
                 }
             }
 
-            // Draw separation lines between viewports
-            let total_viewport_count = viewport_data_collection.len();
+            // Draw separation lines between viewports in a grid
+            let total_viewport_count = viewport_data_collection.len() as u32;
             if total_viewport_count > 1 {
+                let column_count = (total_viewport_count as f32).sqrt().ceil() as u32;
+                let row_count = (total_viewport_count as f32 / column_count as f32).ceil() as u32;
+
                 // Reset viewport to full window for drawing separators
                 active_render_pass.set_viewport(
                     0.0,
@@ -1155,52 +1158,77 @@ impl Renderer {
                 );
 
                 let mut separator_line_vertices_collection = Vec::new();
-                for viewport_index in 1..total_viewport_count {
-                    let horizontal_normalized_coordinate =
-                        (viewport_index as f32 / total_viewport_count as f32) * 2.0 - 1.0;
+                let separator_color = [0.5, 0.5, 0.5];
 
-                    // Vertical line in Normalized Device Coordinates (NDC)
+                // Vertical separators (between columns)
+                for column_index in 1..column_count {
+                    let horizontal_normalized_coordinate =
+                        (column_index as f32 / column_count as f32) * 2.0 - 1.0;
                     separator_line_vertices_collection.push(LineVertex {
                         position: [horizontal_normalized_coordinate, -1.0, 0.0],
-                        color: [0.5, 0.5, 0.5], // Gray separator
+                        color: separator_color,
                     });
                     separator_line_vertices_collection.push(LineVertex {
                         position: [horizontal_normalized_coordinate, 1.0, 0.0],
-                        color: [0.5, 0.5, 0.5],
+                        color: separator_color,
                     });
                 }
 
-                // Update uniform buffer with identity matrix to draw directly in NDC
-                let identity_matrix_array = [
-                    [1.0, 0.0, 0.0, 0.0],
-                    [0.0, 1.0, 0.0, 0.0],
-                    [0.0, 0.0, 1.0, 0.0],
-                    [0.0, 0.0, 0.0, 1.0],
-                ];
-                let identity_uniform_values_structure = Uniforms {
-                    view_projection_matrix: identity_matrix_array,
-                    camera_world_position: [0.0, 0.0, 0.0],
-                    _padding: 0.0,
-                };
-                self.queue.write_buffer(
-                    &self.separator_line_resources.global_uniform_buffer,
-                    0,
-                    bytemuck::bytes_of(&identity_uniform_values_structure),
-                );
+                // Horizontal separators (between rows)
+                for row_index in 1..row_count {
+                    let vertical_normalized_coordinate =
+                        1.0 - (row_index as f32 / row_count as f32) * 2.0;
+                    separator_line_vertices_collection.push(LineVertex {
+                        position: [-1.0, vertical_normalized_coordinate, 0.0],
+                        color: separator_color,
+                    });
+                    separator_line_vertices_collection.push(LineVertex {
+                        position: [1.0, vertical_normalized_coordinate, 0.0],
+                        color: separator_color,
+                    });
+                }
 
-                // Use the temporary buffer to store separator vertices
-                let serialized_separator_vertex_data =
-                    bytemuck::cast_slice(&separator_line_vertices_collection);
-                self.queue.write_buffer(
-                    &self.separator_line_resources.line_vertex_buffer,
-                    0,
-                    serialized_separator_vertex_data,
-                );
+                if !separator_line_vertices_collection.is_empty() {
+                    // Update uniform buffer with identity matrix to draw directly in NDC
+                    let identity_matrix_array = [
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0, 1.0],
+                    ];
+                    let identity_uniform_values_structure = Uniforms {
+                        view_projection_matrix: identity_matrix_array,
+                        camera_world_position: [0.0, 0.0, 0.0],
+                        _padding: 0.0,
+                    };
+                    self.queue.write_buffer(
+                        &self.separator_line_resources.global_uniform_buffer,
+                        0,
+                        bytemuck::bytes_of(&identity_uniform_values_structure),
+                    );
 
-                active_render_pass.set_pipeline(&self.line_render_pipeline);
-                active_render_pass.set_bind_group(0, &self.separator_line_resources.global_uniform_bind_group, &[]);
-                active_render_pass.set_vertex_buffer(0, self.separator_line_resources.line_vertex_buffer.slice(..));
-                active_render_pass.draw(0..(separator_line_vertices_collection.len() as u32), 0..1);
+                    // Use the temporary buffer to store separator vertices
+                    let serialized_separator_vertex_data =
+                        bytemuck::cast_slice(&separator_line_vertices_collection);
+                    self.queue.write_buffer(
+                        &self.separator_line_resources.line_vertex_buffer,
+                        0,
+                        serialized_separator_vertex_data,
+                    );
+
+                    active_render_pass.set_pipeline(&self.line_render_pipeline);
+                    active_render_pass.set_bind_group(
+                        0,
+                        &self.separator_line_resources.global_uniform_bind_group,
+                        &[],
+                    );
+                    active_render_pass.set_vertex_buffer(
+                        0,
+                        self.separator_line_resources.line_vertex_buffer.slice(..),
+                    );
+                    active_render_pass
+                        .draw(0..(separator_line_vertices_collection.len() as u32), 0..1);
+                }
             }
         }
 

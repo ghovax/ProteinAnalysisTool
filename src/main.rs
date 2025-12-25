@@ -78,6 +78,9 @@ struct WindowState {
     right_mouse_button_is_pressed: bool,
     /// The last recorded mouse position for rotation calculations
     last_recorded_mouse_cursor_position: Option<(f64, f64)>,
+
+    /// The path of the currently active Lua script
+    active_script_path_identifier: String,
 }
 
 impl WindowState {
@@ -87,6 +90,7 @@ impl WindowState {
         adapter: &wgpu::Adapter,
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
+        script_path: String,
     ) -> Self {
         let window_inner_size = window.inner_size();
         let surface = instance.create_surface(window.clone()).unwrap();
@@ -119,7 +123,7 @@ impl WindowState {
             window_inner_size.height,
         );
 
-        Self {
+        let mut window_state_instance = Self {
             window,
             surface,
             config,
@@ -129,26 +133,67 @@ impl WindowState {
             mouse_pressed: false,
             right_mouse_button_is_pressed: false,
             last_recorded_mouse_cursor_position: None,
+            active_script_path_identifier: script_path,
+        };
+        
+        window_state_instance.update_window_title_with_current_state();
+        window_state_instance
+    }
+
+    fn update_window_title_with_current_state(&mut self) {
+        let mut loaded_protein_identifiers_collection = Vec::new();
+        for viewport in &self.viewports {
+            let locked_protein_store = viewport.store.read().unwrap();
+            for protein_name in locked_protein_store.list() {
+                if !loaded_protein_identifiers_collection.contains(&protein_name) {
+                    loaded_protein_identifiers_collection.push(protein_name);
+                }
+            }
         }
+
+        let formatted_window_title = if loaded_protein_identifiers_collection.is_empty() {
+            format!("Protein Viewer (Script: {})", self.active_script_path_identifier)
+        } else {
+            format!(
+                "Protein Viewer (Script: {}, Proteins: {})",
+                self.active_script_path_identifier,
+                loaded_protein_identifiers_collection.join(", ")
+            )
+        };
+        
+        self.window.set_title(&formatted_window_title);
     }
 
     fn add_viewport(&mut self, store: Arc<RwLock<ProteinStore>>, camera: Arc<RwLock<Camera>>) {
         self.viewports.push(ViewportState::new(store, camera));
         self.recalculate_viewport_aspect_ratios();
+        self.update_window_title_with_current_state();
+    }
+
+    fn calculate_grid_dimensions(&self) -> (u32, u32) {
+        let total_viewport_count = self.viewports.len() as u32;
+        if total_viewport_count == 0 {
+            return (0, 0);
+        }
+        
+        let column_count = (total_viewport_count as f32).sqrt().ceil() as u32;
+        let row_count = (total_viewport_count as f32 / column_count as f32).ceil() as u32;
+        
+        (column_count, row_count)
     }
 
     fn recalculate_viewport_aspect_ratios(&mut self) {
-        if self.viewports.is_empty() {
+        let (column_count, row_count) = self.calculate_grid_dimensions();
+        if column_count == 0 || row_count == 0 {
             return;
         }
 
-        let viewport_count = self.viewports.len() as f32;
         let window_width = self.config.width as f32;
         let window_height = self.config.height as f32;
         
-        // Horizontal split: each viewport gets equal width
-        let viewport_width = window_width / viewport_count;
-        let aspect_ratio = viewport_width / window_height;
+        let viewport_width = window_width / column_count as f32;
+        let viewport_height = window_height / row_count as f32;
+        let aspect_ratio = viewport_width / viewport_height;
 
         for viewport in &self.viewports {
             viewport.camera.write().unwrap().set_aspect(aspect_ratio);
@@ -199,26 +244,32 @@ impl WindowState {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Prepare data for all viewports
-        let mut viewport_render_data = Vec::new();
-        let viewport_count = self.viewports.len();
+        // Prepare data for all viewports in a grid
+        let mut viewport_render_data_collection = Vec::new();
+        let (column_count, row_count) = self.calculate_grid_dimensions();
         
-        for (index, viewport) in self.viewports.iter().enumerate() {
-            let x_offset = (index as f32 / viewport_count as f32) * self.config.width as f32;
-            let viewport_width = self.config.width as f32 / viewport_count as f32;
+        let viewport_width = self.config.width as f32 / column_count as f32;
+        let viewport_height = self.config.height as f32 / row_count as f32;
+
+        for (viewport_index, viewport_state) in self.viewports.iter().enumerate() {
+            let column_index = (viewport_index as u32 % column_count) as f32;
+            let row_index = (viewport_index as u32 / column_count) as f32;
             
-            viewport_render_data.push((
-                viewport.store.clone(),
-                viewport.camera.clone(),
-                &viewport.selected_atoms[..],
-                &viewport.measurements[..],
-                [x_offset, 0.0, viewport_width, self.config.height as f32],
+            let x_coordinate_offset = column_index * viewport_width;
+            let y_coordinate_offset = row_index * viewport_height;
+            
+            viewport_render_data_collection.push((
+                viewport_state.store.clone(),
+                viewport_state.camera.clone(),
+                &viewport_state.selected_atoms[..],
+                &viewport_state.measurements[..],
+                [x_coordinate_offset, y_coordinate_offset, viewport_width, viewport_height],
             ));
         }
 
         let rendered_graphics_command_buffer = self
             .renderer
-            .render_viewports(&texture_view_for_rendering, &viewport_render_data);
+            .render_viewports(&texture_view_for_rendering, &viewport_render_data_collection);
         
         queue.submit(std::iter::once(rendered_graphics_command_buffer));
         surface_texture_output.present();
@@ -226,16 +277,22 @@ impl WindowState {
         Ok(())
     }
 
-    fn get_viewport_at_mouse(&self, x: f64) -> Option<(usize, f32, f32)> {
-        if self.viewports.is_empty() { return None; }
+    fn get_viewport_at_mouse(&self, mouse_x_coordinate: f64, mouse_y_coordinate: f64) -> Option<(usize, f32, f32, f32)> {
+        let (column_count, row_count) = self.calculate_grid_dimensions();
+        if column_count == 0 || row_count == 0 { return None; }
         
-        let viewport_count = self.viewports.len();
-        let viewport_width = self.config.width as f64 / viewport_count as f64;
-        let viewport_index = (x / viewport_width).floor() as usize;
+        let viewport_width = self.config.width as f64 / column_count as f64;
+        let viewport_height = self.config.height as f64 / row_count as f64;
         
-        if viewport_index < viewport_count {
-            let local_x = x - (viewport_index as f64 * viewport_width);
-            Some((viewport_index, local_x as f32, viewport_width as f32))
+        let column_index = (mouse_x_coordinate / viewport_width).floor() as u32;
+        let row_index = (mouse_y_coordinate / viewport_height).floor() as u32;
+        
+        let target_viewport_index = (row_index * column_count + column_index) as usize;
+        
+        if target_viewport_index < self.viewports.len() {
+            let local_x_coordinate = mouse_x_coordinate - (column_index as f64 * viewport_width);
+            let local_y_coordinate = mouse_y_coordinate - (row_index as f64 * viewport_height);
+            Some((target_viewport_index, local_x_coordinate as f32, local_y_coordinate as f32, viewport_width as f32))
         } else {
             None
         }
@@ -255,7 +312,8 @@ impl WindowState {
                     if let Some((current_mouse_x_coordinate, current_mouse_y_coordinate)) =
                         self.last_recorded_mouse_cursor_position
                     {
-                        if let Some((viewport_index, local_x_coordinate, viewport_width)) = self.get_viewport_at_mouse(current_mouse_x_coordinate) {
+                        let (column_count, row_count) = self.calculate_grid_dimensions();
+                        if let Some((viewport_index, local_x_coordinate, local_y_coordinate, viewport_width)) = self.get_viewport_at_mouse(current_mouse_x_coordinate, current_mouse_y_coordinate) {
                             // Capture the viewport where the interaction started
                             self.captured_viewport_index = Some(viewport_index);
                             
@@ -267,11 +325,11 @@ impl WindowState {
                                 .calculate_ray_from_screen_coordinates(
                                     glam::Vec2::new(
                                         local_x_coordinate,
-                                        current_mouse_y_coordinate as f32,
+                                        local_y_coordinate,
                                     ),
                                     glam::Vec2::new(
                                         viewport_width,
-                                        self.config.height as f32,
+                                        self.config.height as f32 / row_count as f32,
                                     ),
                                 );
 
@@ -379,10 +437,10 @@ impl WindowState {
                 self.right_mouse_button_is_pressed = element_press_state == ElementState::Pressed;
                 if !self.right_mouse_button_is_pressed {
                     self.captured_viewport_index = None;
-                } else if let Some((current_mouse_x_coordinate, _)) = self.last_recorded_mouse_cursor_position {
+                } else if let Some((current_mouse_x_coordinate, current_mouse_y_coordinate)) = self.last_recorded_mouse_cursor_position {
                     // Start capture for right-click drag if not already captured
                     if self.captured_viewport_index.is_none() {
-                        if let Some((viewport_index, _, _)) = self.get_viewport_at_mouse(current_mouse_x_coordinate) {
+                        if let Some((viewport_index, _, _, _)) = self.get_viewport_at_mouse(current_mouse_x_coordinate, current_mouse_y_coordinate) {
                             self.captured_viewport_index = Some(viewport_index);
                         }
                     }
@@ -400,7 +458,7 @@ impl WindowState {
 
             // Prioritize the captured viewport for rotation and translation
             let viewport_index_to_interact_with = self.captured_viewport_index.or_else(|| {
-                self.get_viewport_at_mouse(cursor_screen_position.0).map(|(index, _, _)| index)
+                self.get_viewport_at_mouse(cursor_screen_position.0, cursor_screen_position.1).map(|(index, _, _, _)| index)
             });
 
             if let Some(active_viewport_index) = viewport_index_to_interact_with {
@@ -427,8 +485,8 @@ impl WindowState {
     }
 
     fn handle_scroll(&mut self, scroll_delta_value: f32) {
-        if let Some((current_mouse_x, _)) = self.last_recorded_mouse_cursor_position {
-            if let Some((viewport_index, _, _)) = self.get_viewport_at_mouse(current_mouse_x) {
+        if let Some((current_mouse_x, current_mouse_y)) = self.last_recorded_mouse_cursor_position {
+            if let Some((viewport_index, _, _, _)) = self.get_viewport_at_mouse(current_mouse_x, current_mouse_y) {
                 self.viewports[viewport_index].camera.write().unwrap().zoom(scroll_delta_value);
             }
         }
@@ -577,10 +635,13 @@ struct App {
     script_rx: crossbeam_channel::Receiver<PathBuf>,
     script_event_rx: crossbeam_channel::Receiver<ScriptEvent>,
     _watcher: notify::RecommendedWatcher,
+    
+    /// The path of the currently executing script
+    active_script_path_identifier: String,
 }
 
 impl App {
-    async fn new() -> Self {
+    async fn new(initial_script_path: Option<String>) -> Self {
         let wgpu_instance = wgpu::Instance::default();
         let graphics_adapter = wgpu_instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -648,6 +709,7 @@ impl App {
             script_rx: script_path_receiver,
             script_event_rx,
             _watcher: file_system_watcher,
+            active_script_path_identifier: initial_script_path.unwrap_or_else(|| "none".to_string()),
         }
     }
 
@@ -666,6 +728,7 @@ impl App {
                 &self.adapter,
                 self.device.clone(),
                 self.queue.clone(),
+                self.active_script_path_identifier.clone(),
             ));
         }
         self.window_state.as_mut().unwrap()
@@ -691,10 +754,14 @@ impl App {
         if let Some(reloaded_script_path) = last_reloaded_path {
             info!("Reloading script from path: {:?}", reloaded_script_path);
             if let Some(reloaded_script_path_string) = reloaded_script_path.to_str() {
+                self.active_script_path_identifier = reloaded_script_path_string.to_string();
+                
                 while self.script_event_rx.try_recv().is_ok() {}
 
                 if let Some(current_window_state) = &mut self.window_state {
                     current_window_state.viewports.clear();
+                    current_window_state.active_script_path_identifier = self.active_script_path_identifier.clone();
+                    current_window_state.update_window_title_with_current_state();
                 }
                 self.global_store.write().unwrap().clear();
 
@@ -716,7 +783,7 @@ impl App {
 
 async fn run(initial_script: Option<String>) {
     let main_event_loop = EventLoop::new().unwrap();
-    let mut app = App::new().await;
+    let mut app = App::new(initial_script.clone()).await;
 
     if let Some(provided_initial_script_path) = initial_script {
         if let Err(script_execution_error) =
