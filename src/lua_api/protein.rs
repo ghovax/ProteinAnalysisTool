@@ -236,18 +236,22 @@ impl UserData for LuaProtein {
         // protein:ramachandran_data() returns a list of Phi/Psi points for all residues
         methods.add_method("ramachandran_data", |lua_context, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
-            let ramachandran_points_collection = crate::analysis::ramachandran::calculate_ramachandran_angles_for_protein(&locked_protein_data);
+            let backbone_dihedral_results_collection = crate::analysis::dihedrals::calculate_all_backbone_dihedrals(&locked_protein_data);
             
             let lua_ramachandran_points_table = lua_context.create_table()?;
-            for (point_indexing_counter, current_point) in ramachandran_points_collection.into_iter().enumerate() {
-                let lua_point_data_table = lua_context.create_table()?;
-                lua_point_data_table.set("phi", current_point.phi_angle)?;
-                lua_point_data_table.set("psi", current_point.psi_angle)?;
-                lua_point_data_table.set("residue_name", current_point.residue_name)?;
-                lua_point_data_table.set("residue_number", current_point.residue_number)?;
-                lua_point_data_table.set("chain", current_point.chain_identifier)?;
-                
-                lua_ramachandran_points_table.set(point_indexing_counter + 1, lua_point_data_table)?;
+            let mut result_counting_index = 1;
+
+            for (chain_identifier, residue_number, dihedral_angles) in backbone_dihedral_results_collection {
+                if let (Some(phi_angle), Some(psi_angle)) = (dihedral_angles.phi_angle, dihedral_angles.psi_angle) {
+                    let lua_point_data_table = lua_context.create_table()?;
+                    lua_point_data_table.set("phi", phi_angle)?;
+                    lua_point_data_table.set("psi", psi_angle)?;
+                    lua_point_data_table.set("residue_number", residue_number)?;
+                    lua_point_data_table.set("chain", chain_identifier)?;
+                    
+                    lua_ramachandran_points_table.set(result_counting_index, lua_point_data_table)?;
+                    result_counting_index += 1;
+                }
             }
             Ok(lua_ramachandran_points_table)
         });
@@ -296,23 +300,25 @@ impl UserData for LuaProtein {
             Ok(())
         });
 
-        // protein:rmsd(other_protein) calculates the RMSD between two proteins based on Alpha Carbons
+        // protein:rmsd(other_protein) calculates the RMSD between two proteins based on Alpha Carbons from the first model
         methods.add_method("rmsd", |_, this, other_lua_protein: LuaProtein| {
             let reference_protein_locked_data = this.inner.read().unwrap();
             let moving_protein_locked_data = other_lua_protein.inner.read().unwrap();
             
-            let reference_alpha_carbon_positions: Vec<_> = reference_protein_locked_data
-                .get_alpha_carbon_positions_and_chain_identifiers()
-                .into_iter()
-                .map(|(position, _)| position)
-                .collect();
+            let reference_alpha_carbon_positions = reference_protein_locked_data
+                .get_alpha_carbon_positions_for_first_model();
                 
-            let moving_alpha_carbon_positions: Vec<_> = moving_protein_locked_data
-                .get_alpha_carbon_positions_and_chain_identifiers()
-                .into_iter()
-                .map(|(position, _)| position)
-                .collect();
+            let moving_alpha_carbon_positions = moving_protein_locked_data
+                .get_alpha_carbon_positions_for_first_model();
             
+            if reference_alpha_carbon_positions.len() != moving_alpha_carbon_positions.len() {
+                return Err(mlua::Error::RuntimeError(format!(
+                    "Coordinate sets must have the same length for RMSD calculation ({} vs {} CA atoms). Try aligning sequences or selecting identical residues.",
+                    reference_alpha_carbon_positions.len(),
+                    moving_alpha_carbon_positions.len()
+                )));
+            }
+
             crate::analysis::rmsd::calculate_rmsd_between_coordinate_sets(
                 &reference_alpha_carbon_positions,
                 &moving_alpha_carbon_positions
@@ -324,20 +330,18 @@ impl UserData for LuaProtein {
             let mut moving_protein_mutable_data = this.inner.write().unwrap();
             let reference_protein_locked_data = reference_lua_protein.inner.read().unwrap();
             
-            let reference_alpha_carbon_positions: Vec<_> = reference_protein_locked_data
-                .get_alpha_carbon_positions_and_chain_identifiers()
-                .into_iter()
-                .map(|(position, _)| position)
-                .collect();
+            let reference_alpha_carbon_positions = reference_protein_locked_data
+                .get_alpha_carbon_positions_for_first_model();
                 
-            let moving_alpha_carbon_positions: Vec<_> = moving_protein_mutable_data
-                .get_alpha_carbon_positions_and_chain_identifiers()
-                .into_iter()
-                .map(|(position, _)| position)
-                .collect();
+            let moving_alpha_carbon_positions = moving_protein_mutable_data
+                .get_alpha_carbon_positions_for_first_model();
                 
             if reference_alpha_carbon_positions.len() != moving_alpha_carbon_positions.len() {
-                return Err(mlua::Error::RuntimeError("Proteins must have the same number of Alpha Carbons for superposition".to_string()));
+                return Err(mlua::Error::RuntimeError(format!(
+                    "Proteins must have the same number of Alpha Carbons for superposition ({} vs {} atoms).",
+                    reference_alpha_carbon_positions.len(),
+                    moving_alpha_carbon_positions.len()
+                )));
             }
             
             // Calculate centers of mass for centering
@@ -345,10 +349,10 @@ impl UserData for LuaProtein {
             let moving_center_of_mass = moving_protein_mutable_data.center_of_mass();
             
             let reference_centered_positions: Vec<_> = reference_alpha_carbon_positions.iter()
-                .map(|&pos| pos - reference_center_of_mass)
+                .map(|&position| position - reference_center_of_mass)
                 .collect();
             let moving_centered_positions: Vec<_> = moving_alpha_carbon_positions.iter()
-                .map(|&pos| pos - moving_center_of_mass)
+                .map(|&position| position - moving_center_of_mass)
                 .collect();
             
             let optimal_rotation_matrix = crate::analysis::rmsd::compute_kabsch_optimal_rotation(
@@ -372,7 +376,7 @@ impl UserData for LuaProtein {
                     transformed_position_vector.x as f64,
                     transformed_position_vector.y as f64,
                     transformed_position_vector.z as f64
-                )).unwrap();
+                ));
             }
             
             Ok(())

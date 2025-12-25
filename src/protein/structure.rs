@@ -5,7 +5,7 @@
 //! for managing multiple loaded proteins
 
 use glam::Vec3;
-use pdbtbx::{Format, ReadOptions, PDB};
+use pdbtbx::{Format, ReadOptions, PDB, ContainsAtomConformer, ContainsAtomConformerResidue, ContainsAtomConformerResidueChain};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use log::warn;
@@ -216,32 +216,51 @@ impl ProteinData {
         (minimum_coordinate_bound, maximum_coordinate_bound)
     }
 
+    /// Returns the positions of all Alpha Carbon (CA) atoms in the first model only
+    pub fn get_alpha_carbon_positions_for_first_model(&self) -> Vec<Vec3> {
+        use rayon::prelude::*;
+
+        if let Some(first_model_reference) = self.pdb.models().next() {
+            // Use par_bridge to parallelize the hierarchy traversal
+            first_model_reference.chains()
+                .flat_map(|current_chain_reference| current_chain_reference.residues())
+                .flat_map(|current_residue_reference| current_residue_reference.conformers())
+                .flat_map(|current_conformer_reference| current_conformer_reference.atoms())
+                .par_bridge() // Parallelize the processing of collected atoms
+                .filter(|current_atom_reference| current_atom_reference.name() == "CA")
+                .map(|current_atom_reference| {
+                    let atom_coordinates_tuple = current_atom_reference.pos();
+                    Vec3::new(
+                        atom_coordinates_tuple.0 as f32,
+                        atom_coordinates_tuple.1 as f32,
+                        atom_coordinates_tuple.2 as f32,
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Returns the positions and chain IDs of all Alpha Carbon (CA) atoms
     pub fn get_alpha_carbon_positions_and_chain_identifiers(&self) -> Vec<(Vec3, String)> {
-        let mut alpha_carbon_positions_and_chain_identifiers_collection = Vec::new();
+        use rayon::prelude::*;
 
-        for current_chain_reference in self.pdb.chains() {
-            let chain_id_string = current_chain_reference.id().to_string();
-            for current_residue_reference in current_chain_reference.residues() {
-                for current_conformer_reference in current_residue_reference.conformers() {
-                    for current_atom_reference in current_conformer_reference.atoms() {
-                        if current_atom_reference.name() == "CA" {
-                            let atom_coordinates_tuple = current_atom_reference.pos();
-                            alpha_carbon_positions_and_chain_identifiers_collection.push((
-                                Vec3::new(
-                                    atom_coordinates_tuple.0 as f32,
-                                    atom_coordinates_tuple.1 as f32,
-                                    atom_coordinates_tuple.2 as f32,
-                                ),
-                                chain_id_string.clone(),
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        alpha_carbon_positions_and_chain_identifiers_collection
+        self.pdb.atoms_with_hierarchy()
+            .par_bridge()
+            .filter(|current_hierarchy_reference| current_hierarchy_reference.atom().name() == "CA")
+            .map(|current_hierarchy_reference| {
+                let atom_coordinates_tuple = current_hierarchy_reference.atom().pos();
+                (
+                    Vec3::new(
+                        atom_coordinates_tuple.0 as f32,
+                        atom_coordinates_tuple.1 as f32,
+                        atom_coordinates_tuple.2 as f32,
+                    ),
+                    current_hierarchy_reference.chain().id().to_string(),
+                )
+            })
+            .collect()
     }
 
     /// Returns backbone segments as pairs of (start, end, chain_id) for line rendering
@@ -290,85 +309,78 @@ impl ProteinData {
 
     /// Returns the minimum and maximum B-factor values in the structure
     pub fn calculate_bfactor_range(&self) -> (f32, f32) {
-        let mut minimum_bfactor_value = f32::MAX;
-        let mut maximum_bfactor_value = f32::MIN;
+        use rayon::prelude::*;
 
-        for current_atom_reference in self.pdb.atoms() {
-            let atom_bfactor_value = current_atom_reference.b_factor() as f32;
-            minimum_bfactor_value = minimum_bfactor_value.min(atom_bfactor_value);
-            maximum_bfactor_value = maximum_bfactor_value.max(atom_bfactor_value);
+        let bfactor_values_collection: Vec<f32> = self.pdb.atoms()
+            .par_bridge()
+            .map(|current_atom_reference| current_atom_reference.b_factor() as f32)
+            .collect();
+
+        if bfactor_values_collection.is_empty() {
+            return (0.0, 0.0);
         }
+
+        let minimum_bfactor_value = *bfactor_values_collection.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
+        let maximum_bfactor_value = *bfactor_values_collection.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
 
         (minimum_bfactor_value, maximum_bfactor_value)
     }
 
     /// Returns Alpha Carbon (CA) atoms with their associated B-factors and chain IDs
     pub fn get_alpha_carbon_data_with_bfactors(&self) -> Vec<(Vec3, String, f32)> {
-        let mut alpha_carbon_bfactor_collection = Vec::new();
+        use rayon::prelude::*;
 
-        for current_chain_reference in self.pdb.chains() {
-            let chain_id_string = current_chain_reference.id().to_string();
-            for current_residue_reference in current_chain_reference.residues() {
-                for current_conformer_reference in current_residue_reference.conformers() {
-                    for current_atom_reference in current_conformer_reference.atoms() {
-                        if current_atom_reference.name() == "CA" {
-                            let atom_coordinates_tuple = current_atom_reference.pos();
-                            alpha_carbon_bfactor_collection.push((
-                                Vec3::new(
-                                    atom_coordinates_tuple.0 as f32,
-                                    atom_coordinates_tuple.1 as f32,
-                                    atom_coordinates_tuple.2 as f32,
-                                ),
-                                chain_id_string.clone(),
-                                current_atom_reference.b_factor() as f32,
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        alpha_carbon_bfactor_collection
+        self.pdb.atoms_with_hierarchy()
+            .par_bridge()
+            .filter(|current_hierarchy_reference| current_hierarchy_reference.atom().name() == "CA")
+            .map(|current_hierarchy_reference| {
+                let atom_coordinates_tuple = current_hierarchy_reference.atom().pos();
+                (
+                    Vec3::new(
+                        atom_coordinates_tuple.0 as f32,
+                        atom_coordinates_tuple.1 as f32,
+                        atom_coordinates_tuple.2 as f32,
+                    ),
+                    current_hierarchy_reference.chain().id().to_string(),
+                    current_hierarchy_reference.atom().b_factor() as f32,
+                )
+            })
+            .collect()
     }
 
     /// Returns Alpha Carbon (CA) atoms with their secondary structure and chain IDs
     pub fn get_alpha_carbon_data_with_secondary_structure(
         &self,
     ) -> Vec<(Vec3, String, SecondaryStructureType)> {
-        let mut alpha_carbon_secondary_structure_collection = Vec::new();
+        use rayon::prelude::*;
 
-        for current_chain_reference in self.pdb.chains() {
-            let chain_id_string = current_chain_reference.id().to_string();
-            for current_residue_reference in current_chain_reference.residues() {
-                let residue_number = current_residue_reference.serial_number();
-                let secondary_structure_type = if self.pdb.is_residue_in_helix(&chain_id_string, residue_number) {
+        self.pdb.atoms_with_hierarchy()
+            .par_bridge()
+            .filter(|current_hierarchy_reference| current_hierarchy_reference.atom().name() == "CA")
+            .map(|current_hierarchy_reference| {
+                let chain_id_string = current_hierarchy_reference.chain().id();
+                let residue_number = current_hierarchy_reference.residue().serial_number();
+                let atom_coordinates_tuple = current_hierarchy_reference.atom().pos();
+
+                let secondary_structure_type = if self.pdb.is_residue_in_helix(chain_id_string, residue_number) {
                     SecondaryStructureType::Helix
-                } else if self.pdb.is_residue_in_sheet(&chain_id_string, residue_number) {
+                } else if self.pdb.is_residue_in_sheet(chain_id_string, residue_number) {
                     SecondaryStructureType::Sheet
                 } else {
                     SecondaryStructureType::Other
                 };
 
-                for current_conformer_reference in current_residue_reference.conformers() {
-                    for current_atom_reference in current_conformer_reference.atoms() {
-                        if current_atom_reference.name() == "CA" {
-                            let atom_coordinates_tuple = current_atom_reference.pos();
-                            alpha_carbon_secondary_structure_collection.push((
-                                Vec3::new(
-                                    atom_coordinates_tuple.0 as f32,
-                                    atom_coordinates_tuple.1 as f32,
-                                    atom_coordinates_tuple.2 as f32,
-                                ),
-                                chain_id_string.clone(),
-                                secondary_structure_type,
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        alpha_carbon_secondary_structure_collection
+                (
+                    Vec3::new(
+                        atom_coordinates_tuple.0 as f32,
+                        atom_coordinates_tuple.1 as f32,
+                        atom_coordinates_tuple.2 as f32,
+                    ),
+                    chain_id_string.to_string(),
+                    secondary_structure_type,
+                )
+            })
+            .collect()
     }
 
     /// Returns backbone segments with secondary structure for line rendering
