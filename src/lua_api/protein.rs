@@ -21,6 +21,19 @@ impl LuaProtein {
     }
 }
 
+impl<'lua> mlua::FromLua<'lua> for LuaProtein {
+    fn from_lua(value: mlua::Value<'lua>, _lua: &'lua mlua::Lua) -> mlua::Result<Self> {
+        match value {
+            mlua::Value::UserData(ud) => Ok(ud.borrow::<Self>()?.clone()),
+            _ => Err(mlua::Error::FromLuaConversionError {
+                from: value.type_name(),
+                to: "LuaProtein",
+                message: Some("expected a LuaProtein object".to_string()),
+            }),
+        }
+    }
+}
+
 impl UserData for LuaProtein {
     fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
         // protein:name() returns the name/ID of the protein
@@ -181,8 +194,21 @@ impl UserData for LuaProtein {
             },
         );
 
+        // protein:select(query) returns a list of atom indices matching the PyMOL-style selection query
+        methods.add_method("select", |lua_context, this, selection_query_string: String| {
+            let locked_protein_data = this.inner.read().unwrap();
+            let selection_set = locked_protein_data.select_atoms_from_string(&selection_query_string)
+                .map_err(|error_message| mlua::Error::RuntimeError(error_message))?;
+            
+            let lua_selected_indices_table = lua_context.create_table()?;
+            for (selection_index, atom_index) in selection_set.atom_indices.iter().enumerate() {
+                lua_selected_indices_table.set(selection_index + 1, *atom_index)?;
+            }
+            Ok(lua_selected_indices_table)
+        });
+
         // protein:representation(mode) sets the representation mode
-        // Available modes are "spheres", "backbone", and "both"
+        // Available modes are "spheres", "backbone", "both", "sticks", "ball-and-stick", "space-filling", and "lines"
         methods.add_method_mut(
             "representation",
             |_, this, requested_representation_mode: String| {
@@ -190,11 +216,15 @@ impl UserData for LuaProtein {
                 mutable_protein_data.representation =
                     match requested_representation_mode.to_lowercase().as_str() {
                         "spheres" | "sphere" => Representation::Spheres,
-                        "backbone" | "trace" | "line" | "lines" => Representation::Backbone,
-                        "both" | "all" => Representation::BackboneAndSpheres,
+                        "backbone" | "trace" | "line_trace" => Representation::Backbone,
+                        "both" | "all" | "backbone_and_spheres" => Representation::BackboneAndSpheres,
+                        "sticks" | "stick" | "cylinders" => Representation::Sticks,
+                        "ball_and_stick" | "ball-and-stick" => Representation::BallAndStick,
+                        "space_filling" | "space-filling" | "vdw" => Representation::SpaceFilling,
+                        "lines" | "line" | "wireframe" => Representation::Lines,
                         _ => {
                             return Err(mlua::Error::RuntimeError(format!(
-                        "Unknown representation: '{}'. Use 'spheres', 'backbone', or 'both'",
+                        "Unknown representation: '{}'. Use 'spheres', 'backbone', 'sticks', 'ball-and-stick', etc.",
                         requested_representation_mode
                     )));
                         }
@@ -202,6 +232,124 @@ impl UserData for LuaProtein {
                 Ok(())
             },
         );
+
+        // protein:ramachandran_data() returns a list of Phi/Psi points for all residues
+        methods.add_method("ramachandran_data", |lua_context, this, ()| {
+            let locked_protein_data = this.inner.read().unwrap();
+            let ramachandran_points_collection = crate::analysis::ramachandran::calculate_ramachandran_angles_for_protein(&locked_protein_data);
+            
+            let lua_ramachandran_points_table = lua_context.create_table()?;
+            for (point_indexing_counter, current_point) in ramachandran_points_collection.into_iter().enumerate() {
+                let lua_point_data_table = lua_context.create_table()?;
+                lua_point_data_table.set("phi", current_point.phi_angle)?;
+                lua_point_data_table.set("psi", current_point.psi_angle)?;
+                lua_point_data_table.set("residue_name", current_point.residue_name)?;
+                lua_point_data_table.set("residue_number", current_point.residue_number)?;
+                lua_point_data_table.set("chain", current_point.chain_identifier)?;
+                
+                lua_ramachandran_points_table.set(point_indexing_counter + 1, lua_point_data_table)?;
+            }
+            Ok(lua_ramachandran_points_table)
+        });
+
+        // protein:hydrogen_bonds() returns a list of detected hydrogen bonds
+        methods.add_method("hydrogen_bonds", |lua_context, this, ()| {
+            let locked_protein_data = this.inner.read().unwrap();
+            let identified_hydrogen_bonds = crate::analysis::hbonds::detect_hydrogen_bonds_in_protein(&locked_protein_data);
+            
+            let lua_hydrogen_bonds_table = lua_context.create_table()?;
+            for (bond_indexing_counter, current_bond) in identified_hydrogen_bonds.into_iter().enumerate() {
+                let lua_bond_data_table = lua_context.create_table()?;
+                lua_bond_data_table.set("donor_index", current_bond.donor_atom_index)?;
+                lua_bond_data_table.set("acceptor_index", current_bond.acceptor_atom_index)?;
+                lua_bond_data_table.set("distance", current_bond.distance_in_angstroms)?;
+                
+                lua_hydrogen_bonds_table.set(bond_indexing_counter + 1, lua_bond_data_table)?;
+            }
+            Ok(lua_hydrogen_bonds_table)
+        });
+
+        // protein:rmsd(other_protein) calculates the RMSD between two proteins based on Alpha Carbons
+        methods.add_method("rmsd", |_, this, other_lua_protein: LuaProtein| {
+            let reference_protein_locked_data = this.inner.read().unwrap();
+            let moving_protein_locked_data = other_lua_protein.inner.read().unwrap();
+            
+            let reference_alpha_carbon_positions: Vec<_> = reference_protein_locked_data
+                .get_alpha_carbon_positions_and_chain_identifiers()
+                .into_iter()
+                .map(|(position, _)| position)
+                .collect();
+                
+            let moving_alpha_carbon_positions: Vec<_> = moving_protein_locked_data
+                .get_alpha_carbon_positions_and_chain_identifiers()
+                .into_iter()
+                .map(|(position, _)| position)
+                .collect();
+            
+            crate::analysis::rmsd::calculate_rmsd_between_coordinate_sets(
+                &reference_alpha_carbon_positions,
+                &moving_alpha_carbon_positions
+            ).map_err(|error_message| mlua::Error::RuntimeError(error_message))
+        });
+
+        // protein:superpose(reference_protein) superimposes this protein onto a reference using Kabsch algorithm
+        methods.add_method_mut("superpose", |_, this, reference_lua_protein: LuaProtein| {
+            let mut moving_protein_mutable_data = this.inner.write().unwrap();
+            let reference_protein_locked_data = reference_lua_protein.inner.read().unwrap();
+            
+            let reference_alpha_carbon_positions: Vec<_> = reference_protein_locked_data
+                .get_alpha_carbon_positions_and_chain_identifiers()
+                .into_iter()
+                .map(|(position, _)| position)
+                .collect();
+                
+            let moving_alpha_carbon_positions: Vec<_> = moving_protein_mutable_data
+                .get_alpha_carbon_positions_and_chain_identifiers()
+                .into_iter()
+                .map(|(position, _)| position)
+                .collect();
+                
+            if reference_alpha_carbon_positions.len() != moving_alpha_carbon_positions.len() {
+                return Err(mlua::Error::RuntimeError("Proteins must have the same number of Alpha Carbons for superposition".to_string()));
+            }
+            
+            // Calculate centers of mass for centering
+            let reference_center_of_mass = reference_protein_locked_data.center_of_mass();
+            let moving_center_of_mass = moving_protein_mutable_data.center_of_mass();
+            
+            let reference_centered_positions: Vec<_> = reference_alpha_carbon_positions.iter()
+                .map(|&pos| pos - reference_center_of_mass)
+                .collect();
+            let moving_centered_positions: Vec<_> = moving_alpha_carbon_positions.iter()
+                .map(|&pos| pos - moving_center_of_mass)
+                .collect();
+            
+            let optimal_rotation_matrix = crate::analysis::rmsd::compute_kabsch_optimal_rotation(
+                &reference_centered_positions,
+                &moving_centered_positions
+            ).map_err(|error_message| mlua::Error::RuntimeError(error_message))?;
+            
+            // Apply transformation to all atoms in the moving protein
+            for current_atom_reference in moving_protein_mutable_data.pdb.atoms_mut() {
+                let current_position_tuple = current_atom_reference.pos();
+                let current_position_vector = glam::Vec3::new(
+                    current_position_tuple.0 as f32,
+                    current_position_tuple.1 as f32,
+                    current_position_tuple.2 as f32
+                );
+                
+                // Centering, rotating, and moving to reference center
+                let transformed_position_vector = optimal_rotation_matrix * (current_position_vector - moving_center_of_mass) + reference_center_of_mass;
+                
+                current_atom_reference.set_pos((
+                    transformed_position_vector.x as f64,
+                    transformed_position_vector.y as f64,
+                    transformed_position_vector.z as f64
+                ));
+            }
+            
+            Ok(())
+        });
 
         // protein:color_by(scheme) sets the color scheme
         // Available schemes are "chain", "element", "bfactor", and "secondary"

@@ -6,6 +6,8 @@
 mod lua_api;
 mod protein;
 mod renderer;
+mod selection;
+mod analysis;
 
 use clap::Parser;
 use notify::Watcher;

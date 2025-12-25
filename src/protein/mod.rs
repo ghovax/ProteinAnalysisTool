@@ -5,5 +5,6 @@
 
 pub mod fetch;
 pub mod structure;
+pub mod bonds;
 
 pub use structure::{ColorScheme, ProteinData, ProteinStore, Representation};

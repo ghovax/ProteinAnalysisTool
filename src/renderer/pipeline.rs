@@ -4,6 +4,7 @@
 //! and the actual drawing of protein structures (spheres and lines)
 
 use glam::Vec4Swizzles;
+use pdbtbx::{ContainsAtomConformer, ContainsAtomConformerResidue, ContainsAtomConformerResidueChain};
 use std::collections::HashMap;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -20,6 +21,22 @@ pub struct SphereInstance {
     /// Radius of the sphere
     pub radius: f32,
     /// Color of the sphere (RGB)
+    pub color: [f32; 3],
+    /// Selection factor (0.0 = normal, 1.0 = selected)
+    pub selection_factor: f32,
+}
+
+/// Instance data for rendering a cylinder (bond or stick)
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct CylinderInstance {
+    /// World position of the start of the cylinder
+    pub start_position: [f32; 3],
+    /// World position of the end of the cylinder
+    pub end_position: [f32; 3],
+    /// Radius of the cylinder
+    pub radius: f32,
+    /// Color of the cylinder (RGB)
     pub color: [f32; 3],
     /// Selection factor (0.0 = normal, 1.0 = selected)
     pub selection_factor: f32,
@@ -106,11 +123,14 @@ pub struct Renderer {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     sphere_render_pipeline: wgpu::RenderPipeline,
+    cylinder_render_pipeline: wgpu::RenderPipeline,
     line_render_pipeline: wgpu::RenderPipeline,
     global_uniform_buffer: wgpu::Buffer,
     global_uniform_bind_group: wgpu::BindGroup,
     sphere_instance_buffer: wgpu::Buffer,
     sphere_count: u32,
+    cylinder_instance_buffer: wgpu::Buffer,
+    cylinder_count: u32,
     line_vertex_buffer: wgpu::Buffer,
     line_vertex_count: u32,
     depth_stencil_texture_view: wgpu::TextureView,
@@ -246,6 +266,73 @@ impl Renderer {
                 cache: None,
             });
 
+        // Cylinder pipeline
+        let cylinder_render_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Cylinder Pipeline"),
+                layout: Some(&render_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader_module,
+                    entry_point: "vs_cylinder",
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<CylinderInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                offset: 0,
+                                shader_location: 0,
+                                format: wgpu::VertexFormat::Float32x3,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 12,
+                                shader_location: 1,
+                                format: wgpu::VertexFormat::Float32x3,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 24,
+                                shader_location: 2,
+                                format: wgpu::VertexFormat::Float32,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 28,
+                                shader_location: 3,
+                                format: wgpu::VertexFormat::Float32x3,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 40,
+                                shader_location: 4,
+                                format: wgpu::VertexFormat::Float32,
+                            },
+                        ],
+                    }],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader_module,
+                    entry_point: "fs_cylinder",
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: surface_format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+
         // Line pipeline
         let line_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Line Pipeline"),
@@ -304,6 +391,13 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
+        let cylinder_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Cylinder Buffer"),
+            size: 1024 * 1024,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let line_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Line Buffer"),
             size: 1024 * 1024,
@@ -331,11 +425,14 @@ impl Renderer {
             device,
             queue,
             sphere_render_pipeline,
+            cylinder_render_pipeline,
             line_render_pipeline,
             global_uniform_buffer,
             global_uniform_bind_group,
             sphere_instance_buffer,
             sphere_count: 0,
+            cylinder_instance_buffer,
+            cylinder_count: 0,
             line_vertex_buffer,
             line_vertex_count: 0,
             depth_stencil_texture_view,
@@ -383,6 +480,7 @@ impl Renderer {
         active_measurement_pairs: &[(usize, usize)],
     ) {
         let mut sphere_instances_collection = Vec::new();
+        let mut cylinder_instances_collection = Vec::new();
         let mut line_vertices_collection = Vec::new();
 
         let mut atom_world_positions_lookup_table = HashMap::new();
@@ -427,100 +525,120 @@ impl Renderer {
                 }
             };
 
-            // Generate sphere instances if the representation mode requires them
-            if active_representation_mode == Representation::Spheres
-                || active_representation_mode == Representation::BackboneAndSpheres
-            {
-                if active_color_scheme_mode == ColorScheme::BySecondary {
-                    let alpha_carbon_secondary_structure_data =
-                        protein_locked_data.get_alpha_carbon_data_with_secondary_structure();
-                    for (
-                        atom_indexing_counter,
-                        (atom_world_position_vector, _, secondary_structure_type),
-                    ) in alpha_carbon_secondary_structure_data
-                        .into_iter()
-                        .enumerate()
-                    {
-                        atom_world_positions_lookup_table.insert(
-                            (protein_identifier_name.clone(), atom_indexing_counter),
-                            atom_world_position_vector,
-                        );
+            // Pre-calculate atom data
+            let mut protein_atom_data_list = Vec::new();
+            for (atom_index, atom_hierarchy) in protein_locked_data.pdb.atoms_with_hierarchy().enumerate() {
+                let atom_reference = atom_hierarchy.atom();
+                let position_tuple = atom_reference.pos();
+                let world_position = glam::Vec3::new(position_tuple.0 as f32, position_tuple.1 as f32, position_tuple.2 as f32);
+                
+                atom_world_positions_lookup_table.insert(
+                    (protein_identifier_name.clone(), atom_index),
+                    world_position,
+                );
 
-                        let final_calculated_atom_color =
-                            get_secondary_structure_color(secondary_structure_type);
-                        let is_atom_currently_selected = currently_selected_atoms
-                            .contains(&(protein_identifier_name.clone(), atom_indexing_counter));
-
-                        sphere_instances_collection.push(SphereInstance {
-                            position: [
-                                atom_world_position_vector.x,
-                                atom_world_position_vector.y,
-                                atom_world_position_vector.z,
-                            ],
-                            radius: 1.5,
-                            color: final_calculated_atom_color,
-                            selection_factor: if is_atom_currently_selected { 1.0 } else { 0.0 },
-                        });
-                    }
+                let chain_id = atom_hierarchy.chain().id();
+                let residue_number = atom_hierarchy.residue().serial_number();
+                
+                let secondary_structure_type = if protein_locked_data.pdb.is_residue_in_helix(chain_id, residue_number) {
+                    crate::protein::structure::SecondaryStructureType::Helix
+                } else if protein_locked_data.pdb.is_residue_in_sheet(chain_id, residue_number) {
+                    crate::protein::structure::SecondaryStructureType::Sheet
                 } else {
-                    let alpha_carbon_data_with_bfactors_collection =
-                        protein_locked_data.get_alpha_carbon_data_with_bfactors();
-                    for (
-                        atom_indexing_counter,
-                        (
-                            atom_world_position_vector,
-                            target_chain_identifier,
-                            atom_temperature_factor,
-                        ),
-                    ) in alpha_carbon_data_with_bfactors_collection
-                        .into_iter()
-                        .enumerate()
-                    {
-                        // Store world position for distance measurements
-                        atom_world_positions_lookup_table.insert(
-                            (protein_identifier_name.clone(), atom_indexing_counter),
-                            atom_world_position_vector,
-                        );
+                    crate::protein::structure::SecondaryStructureType::Other
+                };
 
-                        let final_calculated_atom_color = match active_color_scheme_mode {
-                            ColorScheme::ByBFactor => bfactor_to_color(
-                                atom_temperature_factor,
-                                minimum_bfactor_value,
-                                maximum_bfactor_value,
-                            ),
-                            ColorScheme::ByElement => _get_element_color("C"), // Alpha Carbon is Carbon
-                            _ => get_color_for_chain_identifier(&target_chain_identifier),
-                        };
+                let color = match active_color_scheme_mode {
+                    ColorScheme::ByChain => get_color_for_chain_identifier(chain_id),
+                    ColorScheme::ByElement => _get_element_color(atom_reference.element().map(|e| e.symbol()).unwrap_or("?")),
+                    ColorScheme::ByBFactor => bfactor_to_color(atom_reference.b_factor() as f32, minimum_bfactor_value, maximum_bfactor_value),
+                    ColorScheme::BySecondary => get_secondary_structure_color(secondary_structure_type),
+                    ColorScheme::Uniform(rgb) => rgb,
+                };
 
-                        let is_atom_currently_selected = currently_selected_atoms
-                            .contains(&(protein_identifier_name.clone(), atom_indexing_counter));
+                let is_selected = currently_selected_atoms.contains(&(protein_identifier_name.clone(), atom_index));
 
+                protein_atom_data_list.push((world_position, color, is_selected, atom_reference.name().to_string(), atom_reference.element().map(|e| e.symbol().to_string())));
+            }
+
+            // Generate spheres
+            match active_representation_mode {
+                Representation::Spheres | Representation::BackboneAndSpheres => {
+                    // Only Alpha Carbons (CA)
+                    for (atom_index, (atom_world_position, atom_color, is_atom_selected, atom_name, _)) in protein_atom_data_list.iter().enumerate() {
+                        if atom_name == "CA" {
+                            sphere_instances_collection.push(SphereInstance {
+                                position: atom_world_position.to_array(),
+                                radius: 1.5,
+                                color: *atom_color,
+                                selection_factor: if *is_atom_selected { 1.0 } else { 0.0 },
+                            });
+                        }
+                    }
+                }
+                Representation::BallAndStick => {
+                    // All atoms as small spheres
+                    for (atom_world_position, atom_color, is_atom_selected, _, _) in &protein_atom_data_list {
                         sphere_instances_collection.push(SphereInstance {
-                            position: [
-                                atom_world_position_vector.x,
-                                atom_world_position_vector.y,
-                                atom_world_position_vector.z,
-                            ],
-                            radius: 1.5,
-                            color: final_calculated_atom_color,
-                            selection_factor: if is_atom_currently_selected { 1.0 } else { 0.0 },
+                            position: atom_world_position.to_array(),
+                            radius: 0.4,
+                            color: *atom_color,
+                            selection_factor: if *is_atom_selected { 1.0 } else { 0.0 },
                         });
                     }
                 }
-            } else {
-                // Still need to fill atom_world_positions_lookup_table for measurements even if spheres aren't drawn
-                let alpha_carbon_positions_and_chain_identifiers_collection =
-                    protein_locked_data.get_alpha_carbon_positions_and_chain_identifiers();
-                for (atom_indexing_counter, (atom_world_position_vector, _)) in
-                    alpha_carbon_positions_and_chain_identifiers_collection
-                        .into_iter()
-                        .enumerate()
-                {
-                    atom_world_positions_lookup_table.insert(
-                        (protein_identifier_name.clone(), atom_indexing_counter),
-                        atom_world_position_vector,
-                    );
+                Representation::SpaceFilling => {
+                    // All atoms as VdW spheres
+                    for (atom_world_position, atom_color, is_atom_selected, _, _) in &protein_atom_data_list {
+                        sphere_instances_collection.push(SphereInstance {
+                            position: atom_world_position.to_array(),
+                            radius: 1.7, // Average VdW radius
+                            color: *atom_color,
+                            selection_factor: if *is_atom_selected { 1.0 } else { 0.0 },
+                        });
+                    }
                 }
+                _ => {}
+            }
+
+            // Generate cylinders/lines for bonds
+            match active_representation_mode {
+                Representation::Sticks | Representation::BallAndStick => {
+                    for current_atom_bond in &protein_locked_data.identified_atom_bonds {
+                        let (start_atom_position, start_atom_color, is_start_atom_selected, _, _) = protein_atom_data_list[current_atom_bond.first_atom_index];
+                        let (end_atom_position, end_atom_color, is_end_atom_selected, _, _) = protein_atom_data_list[current_atom_bond.second_atom_index];
+                        
+                        let cylinder_radius_value = if active_representation_mode == Representation::Sticks { 0.3 } else { 0.15 };
+                        
+                        // Create two cylinders meeting in the middle for per-atom coloring
+                        let middle_position_vector = (start_atom_position + end_atom_position) * 0.5;
+                        
+                        cylinder_instances_collection.push(CylinderInstance {
+                            start_position: start_atom_position.to_array(),
+                            end_position: middle_position_vector.to_array(),
+                            radius: cylinder_radius_value,
+                            color: start_atom_color,
+                            selection_factor: if is_start_atom_selected { 1.0 } else { 0.0 },
+                        });
+                        cylinder_instances_collection.push(CylinderInstance {
+                            start_position: middle_position_vector.to_array(),
+                            end_position: end_atom_position.to_array(),
+                            radius: cylinder_radius_value,
+                            color: end_atom_color,
+                            selection_factor: if is_end_atom_selected { 1.0 } else { 0.0 },
+                        });
+                    }
+                }
+                Representation::Lines => {
+                    for current_atom_bond in &protein_locked_data.identified_atom_bonds {
+                        let (start_atom_position, start_atom_color, _, _, _) = protein_atom_data_list[current_atom_bond.first_atom_index];
+                        let (end_atom_position, end_atom_color, _, _, _) = protein_atom_data_list[current_atom_bond.second_atom_index];
+                        
+                        line_vertices_collection.push(LineVertex { position: start_atom_position.to_array(), color: start_atom_color });
+                        line_vertices_collection.push(LineVertex { position: end_atom_position.to_array(), color: end_atom_color });
+                    }
+                }
+                _ => {}
             }
 
             // Generate backbone backbone trace lines if needed
@@ -615,6 +733,29 @@ impl Renderer {
                         color: measurement_line_color,
                     });
                 }
+            }
+        }
+
+        // Update GPU cylinder instance buffer
+        self.cylinder_count = cylinder_instances_collection.len() as u32;
+        if !cylinder_instances_collection.is_empty() {
+            let serialized_cylinder_instance_data =
+                bytemuck::cast_slice(&cylinder_instances_collection);
+            if serialized_cylinder_instance_data.len() as u64 > self.cylinder_instance_buffer.size()
+            {
+                self.cylinder_instance_buffer =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Cylinder Instance Buffer"),
+                            contents: serialized_cylinder_instance_data,
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        });
+            } else {
+                self.queue.write_buffer(
+                    &self.cylinder_instance_buffer,
+                    0,
+                    serialized_cylinder_instance_data,
+                );
             }
         }
 
@@ -730,6 +871,14 @@ impl Renderer {
                 active_render_pass.set_bind_group(0, &self.global_uniform_bind_group, &[]);
                 active_render_pass.set_vertex_buffer(0, self.sphere_instance_buffer.slice(..));
                 active_render_pass.draw(0..4, 0..self.sphere_count);
+            }
+
+            // Draw cylinders (sticks/bonds)
+            if self.cylinder_count > 0 {
+                active_render_pass.set_pipeline(&self.cylinder_render_pipeline);
+                active_render_pass.set_bind_group(0, &self.global_uniform_bind_group, &[]);
+                active_render_pass.set_vertex_buffer(0, self.cylinder_instance_buffer.slice(..));
+                active_render_pass.draw(0..4, 0..self.cylinder_count);
             }
         }
 

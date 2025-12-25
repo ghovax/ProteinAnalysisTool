@@ -256,7 +256,7 @@ impl PDB {
     }
 
     /// Check if a residue is part of any helix.
-    pub fn residue_in_helix(&self, chain_id: &str, residue_number: isize) -> bool {
+    pub fn is_residue_in_helix(&self, chain_id: &str, residue_number: isize) -> bool {
         self.helices
             .iter()
             .any(|h| h.contains_residue(chain_id, residue_number))
@@ -320,7 +320,7 @@ impl PDB {
     }
 
     /// Check if a residue is part of any sheet strand.
-    pub fn residue_in_sheet(&self, chain_id: &str, residue_number: isize) -> bool {
+    pub fn is_residue_in_sheet(&self, chain_id: &str, residue_number: isize) -> bool {
         self.sheets
             .iter()
             .any(|s| s.contains_residue(chain_id, residue_number))

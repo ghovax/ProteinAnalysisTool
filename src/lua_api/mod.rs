@@ -197,6 +197,10 @@ impl ScriptEngine {
                         crate::protein::structure::Representation::Spheres => "spheres",
                         crate::protein::structure::Representation::Backbone => "backbone",
                         crate::protein::structure::Representation::BackboneAndSpheres => "both",
+                        crate::protein::structure::Representation::Sticks => "sticks",
+                        crate::protein::structure::Representation::BallAndStick => "ball-and-stick",
+                        crate::protein::structure::Representation::SpaceFilling => "space-filling",
+                        crate::protein::structure::Representation::Lines => "lines",
                     };
                     writeln!(file, "{}:representation(\"{}\")", var_name, repr).unwrap();
 

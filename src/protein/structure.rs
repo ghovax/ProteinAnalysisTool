@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use super::fetch::{fetch_pdb, load_file, FileFormat};
+use crate::selection::SelectionSet;
 
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +24,14 @@ pub enum Representation {
     Backbone,
     /// Both the backbone trace and spheres are rendered
     BackboneAndSpheres,
+    /// Cylinders for all covalent bonds
+    Sticks,
+    /// Spheres for atoms and cylinders for bonds
+    BallAndStick,
+    /// Van der Waals spheres for all atoms
+    SpaceFilling,
+    /// Simple lines for all covalent bonds
+    Lines,
 }
 
 /// The available color schemes for a protein
@@ -70,6 +79,8 @@ pub struct ProteinData {
     pub representation: Representation,
     /// The current color scheme
     pub color_scheme: ColorScheme,
+    /// Cached set of covalent bonds identified in the structure
+    pub identified_atom_bonds: std::collections::HashSet<super::bonds::AtomBond>,
 }
 
 impl ProteinData {
@@ -100,6 +111,9 @@ impl ProteinData {
             );
         }
 
+        let bond_calculator = super::bonds::BondCalculator::new(&pdb);
+        let identified_atom_bonds = bond_calculator.calculate_all_bonds();
+
         Ok(Self {
             pdb,
             name: name.to_string(),
@@ -107,6 +121,7 @@ impl ProteinData {
             visible: true,
             representation: Representation::default(),
             color_scheme: ColorScheme::default(),
+            identified_atom_bonds,
         })
     }
 
@@ -121,6 +136,13 @@ impl ProteinData {
             .chains()
             .map(|current_chain| current_chain.id().to_string())
             .collect()
+    }
+
+    /// Selects atoms based on a PyMOL-style selection string
+    pub fn select_atoms_from_string(&self, selection_query_string: &str) -> Result<SelectionSet, String> {
+        let selection_expression = crate::selection::parser::parse_selection_expression(selection_query_string)?;
+        let selection_evaluator = crate::selection::evaluator::Evaluator::new(self);
+        Ok(selection_evaluator.evaluate_expression(&selection_expression))
     }
 
     /// Calculates the geometric center of mass of all atoms
@@ -288,12 +310,10 @@ impl ProteinData {
         for current_chain_reference in self.pdb.chains() {
             let chain_id_string = current_chain_reference.id().to_string();
             for current_residue_reference in current_chain_reference.residues() {
-                // Placeholder: pdbtbx 0.12.0 does not expose helices/sheets directly.
-                // We use a dummy pattern based on residue serial number for visualization.
-                let residue_serial_number = current_residue_reference.serial_number();
-                let secondary_structure_type = if (residue_serial_number / 10) % 3 == 0 {
+                let residue_number = current_residue_reference.serial_number();
+                let secondary_structure_type = if self.pdb.is_residue_in_helix(&chain_id_string, residue_number) {
                     SecondaryStructureType::Helix
-                } else if (residue_serial_number / 10) % 3 == 1 {
+                } else if self.pdb.is_residue_in_sheet(&chain_id_string, residue_number) {
                     SecondaryStructureType::Sheet
                 } else {
                     SecondaryStructureType::Other
@@ -333,10 +353,10 @@ impl ProteinData {
                 None;
 
             for current_residue_reference in current_chain_reference.residues() {
-                let residue_serial_number = current_residue_reference.serial_number();
-                let secondary_structure_type = if (residue_serial_number / 10) % 3 == 0 {
+                let residue_number = current_residue_reference.serial_number();
+                let secondary_structure_type = if self.pdb.is_residue_in_helix(&chain_id_string, residue_number) {
                     SecondaryStructureType::Helix
-                } else if (residue_serial_number / 10) % 3 == 1 {
+                } else if self.pdb.is_residue_in_sheet(&chain_id_string, residue_number) {
                     SecondaryStructureType::Sheet
                 } else {
                     SecondaryStructureType::Other
@@ -356,6 +376,8 @@ impl ProteinData {
                                 previous_alpha_carbon_information
                             {
                                 if previous_position.distance(current_alpha_carbon_position) < 5.0 {
+                                    // Use the secondary structure of the current residue for the segment
+                                    // Or we could interpolate, but usually segments are assigned to the latter residue
                                     backbone_segment_collection.push((
                                         previous_position,
                                         current_alpha_carbon_position,

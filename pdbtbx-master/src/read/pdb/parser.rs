@@ -459,7 +459,7 @@ where
                         initial_seq_num,
                         initial_insertion_code,
                         terminal_residue_name,
-                        terminal_chain_id,
+                        _terminal_chain_id,
                         terminal_seq_num,
                         terminal_insertion_code,
                         sense,
