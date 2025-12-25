@@ -15,54 +15,50 @@ pub struct HydrogenBond {
 pub fn detect_hydrogen_bonds_in_protein(
     protein_data: &ProteinData,
 ) -> Vec<HydrogenBond> {
-    let mut identified_hydrogen_bonds = Vec::new();
-    
+    use rayon::prelude::*;
+
     // 1. Identify potential donor and acceptor atoms
     // Acceptors: O, N (with lone pairs)
     // Donors: N, O (with hydrogens attached)
-    
-    let mut potential_acceptor_indices = Vec::new();
-    let mut potential_donor_indices = Vec::new();
-    
-    for (atom_index, atom_reference) in protein_data.pdb.atoms().enumerate() {
-        let element_symbol = atom_reference.element().map(|e| e.symbol()).unwrap_or("?");
-        match element_symbol {
-            "O" | "N" => {
-                potential_acceptor_indices.push(atom_index);
-                potential_donor_indices.push(atom_index);
+    let atom_info_list: Vec<(usize, Vec3, &str)> = protein_data.pdb.atoms()
+        .enumerate()
+        .filter_map(|(atom_index, atom_reference)| {
+            let element_symbol = atom_reference.element().map(|e| e.symbol()).unwrap_or("?");
+            match element_symbol {
+                "O" | "N" => {
+                    let pos = atom_reference.pos();
+                    Some((atom_index, Vec3::new(pos.0 as f32, pos.1 as f32, pos.2 as f32), element_symbol))
+                },
+                _ => None,
             }
-            _ => {}
-        }
-    }
-    
-    let atom_coordinates: Vec<Vec3> = protein_data.pdb.atoms()
-        .map(|a| {
-            let p = a.pos();
-            Vec3::new(p.0 as f32, p.1 as f32, p.2 as f32)
         })
         .collect();
         
-    // 2. Perform distance-based search (threshold < 3.5 A)
-    // Note: A real implementation would use a spatial index (RTree)
-    for &donor_index in &potential_donor_indices {
-        let donor_position = atom_coordinates[donor_index];
-        
-        for &acceptor_index in &potential_acceptor_indices {
-            if donor_index == acceptor_index { continue; }
-            
-            let acceptor_position = atom_coordinates[acceptor_index];
-            let distance_squared = donor_position.distance_squared(acceptor_position);
-            
-            if distance_squared < 12.25 { // 3.5 A squared
-                let distance = distance_squared.sqrt();
-                identified_hydrogen_bonds.push(HydrogenBond {
-                    donor_atom_index: donor_index,
-                    acceptor_atom_index: acceptor_index,
-                    distance_in_angstroms: distance,
-                });
-            }
-        }
-    }
+    let atom_info_slice = atom_info_list.as_slice();
+
+    // 2. Perform distance-based search (threshold < 3.5 A) in parallel
+    let identified_hydrogen_bonds: Vec<HydrogenBond> = atom_info_slice.par_iter()
+        .enumerate()
+        .flat_map(|(list_index, &(donor_atom_index, donor_position, _))| {
+            // Check against all other potential acceptors using another parallel iterator
+            atom_info_slice.par_iter()
+                .skip(list_index + 1) // Avoid double counting and self-comparison
+                .filter_map(move |&(acceptor_atom_index, acceptor_position, _)| {
+                    let distance_squared = donor_position.distance_squared(acceptor_position);
+                    
+                    if distance_squared < 12.25 { // 3.5 A squared
+                        let distance_value = distance_squared.sqrt();
+                        Some(HydrogenBond {
+                            donor_atom_index,
+                            acceptor_atom_index,
+                            distance_in_angstroms: distance_value,
+                        })
+                    } else {
+                        None
+                    }
+                })
+        })
+        .collect();
     
     identified_hydrogen_bonds
 }

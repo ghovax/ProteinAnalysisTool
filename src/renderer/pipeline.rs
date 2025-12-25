@@ -3,7 +3,6 @@
 //! This module handles the creation of render pipelines, management of GPU buffers,
 //! and the actual drawing of protein structures (spheres and lines)
 
-use glam::Vec4Swizzles;
 use pdbtbx::{ContainsAtomConformer, ContainsAtomConformerResidue, ContainsAtomConformerResidueChain};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -138,22 +137,6 @@ pub struct Renderer {
     line_vertex_buffer: wgpu::Buffer,
     line_vertex_count: u32,
     depth_stencil_texture_view: wgpu::TextureView,
-
-    // Text rendering
-    font_system: glyphon::FontSystem,
-    swash_cache: glyphon::SwashCache,
-    text_atlas: glyphon::TextAtlas,
-    text_renderer: glyphon::TextRenderer,
-    text_buffer: glyphon::Buffer,
-    viewport: glyphon::Viewport,
-    render_format: wgpu::TextureFormat,
-}
-
-/// A text label at a 3D position
-pub struct TextLabel {
-    pub position: glam::Vec3,
-    pub text: String,
-    pub color: [f32; 4],
 }
 
 impl Renderer {
@@ -482,20 +465,6 @@ impl Renderer {
 
         let depth_stencil_texture_view = Self::create_depth_texture(&device, width, height);
 
-        // glyphon setup
-        let mut font_system = glyphon::FontSystem::new();
-        let swash_cache = glyphon::SwashCache::new();
-        let cache = glyphon::Cache::new(&device);
-        let mut text_atlas = glyphon::TextAtlas::new(&device, &queue, &cache, surface_format);
-        let text_renderer = glyphon::TextRenderer::new(
-            &mut text_atlas,
-            &device,
-            wgpu::MultisampleState::default(),
-            None,
-        );
-        let text_buffer = glyphon::Buffer::new(&mut font_system, glyphon::Metrics::new(32.0, 40.0));
-        let viewport = glyphon::Viewport::new(&device, &cache);
-
         Self {
             device,
             queue,
@@ -515,13 +484,6 @@ impl Renderer {
             line_vertex_buffer,
             line_vertex_count: 0,
             depth_stencil_texture_view,
-            font_system,
-            swash_cache,
-            text_atlas,
-            text_renderer,
-            text_buffer,
-            viewport,
-            render_format: surface_format,
         }
     }
 
@@ -547,8 +509,6 @@ impl Renderer {
     /// Resizes the depth texture when the window is resized
     pub fn resize(&mut self, width: u32, height: u32) {
         self.depth_stencil_texture_view = Self::create_depth_texture(&self.device, width, height);
-        self.viewport
-            .update(&self.queue, glyphon::Resolution { width, height });
     }
 
     /// Updates the GPU buffers with the latest protein instance data
@@ -921,9 +881,6 @@ impl Renderer {
         &mut self,
         target_texture_view: &wgpu::TextureView,
         camera_object_handle: &Camera,
-        text_labels_collection: &[TextLabel],
-        viewport_width: u32,
-        viewport_height: u32,
     ) -> wgpu::CommandBuffer {
         let global_uniform_values_structure = Uniforms {
             view_projection_matrix: camera_object_handle
@@ -1004,92 +961,6 @@ impl Renderer {
                 active_render_pass.set_vertex_buffer(0, self.surface_vertex_buffer.slice(..));
                 active_render_pass.set_index_buffer(self.surface_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 active_render_pass.draw_indexed(0..self.surface_indices_count, 0, 0..1);
-            }
-        }
-
-        // Prepare and render UI text labels
-        let view_projection_matrix = camera_object_handle.view_projection_matrix();
-
-        let mut combined_ui_text_string = String::new();
-        for current_text_label in text_labels_collection {
-            if current_text_label.position != glam::Vec3::ZERO {
-                let clip_space_position =
-                    view_projection_matrix * current_text_label.position.extend(1.0);
-                if clip_space_position.w > 0.0 {
-                    let normalized_device_coordinates =
-                        clip_space_position.xyz() / clip_space_position.w;
-                    if normalized_device_coordinates.x.abs() <= 1.0
-                        && normalized_device_coordinates.y.abs() <= 1.0
-                        && normalized_device_coordinates.z >= 0.0
-                        && normalized_device_coordinates.z <= 1.0
-                    {
-                        // Position on screen (placeholder logic for combined string)
-                        combined_ui_text_string.push_str(&current_text_label.text);
-                        combined_ui_text_string.push(' ');
-                    }
-                }
-            } else {
-                // Fixed UI labels
-                combined_ui_text_string.push_str(&current_text_label.text);
-                combined_ui_text_string.push('\n');
-            }
-        }
-
-        if !combined_ui_text_string.is_empty() {
-            self.text_buffer.set_text(
-                &mut self.font_system,
-                &combined_ui_text_string,
-                glyphon::Attrs::new().family(glyphon::Family::SansSerif),
-                glyphon::Shaping::Advanced,
-            );
-            self.text_buffer
-                .shape_until_scroll(&mut self.font_system, true);
-
-            self.text_renderer
-                .prepare(
-                    &self.device,
-                    &self.queue,
-                    &mut self.font_system,
-                    &mut self.text_atlas,
-                    &self.viewport,
-                    [glyphon::TextArea {
-                        buffer: &self.text_buffer,
-                        left: 20.0,
-                        top: 20.0,
-                        scale: 1.0,
-                        bounds: glyphon::TextBounds {
-                            left: 0,
-                            top: 0,
-                            right: viewport_width as i32,
-                            bottom: viewport_height as i32,
-                        },
-                        default_color: glyphon::Color::rgb(255, 255, 255),
-                        custom_glyphs: &[],
-                    }],
-                    &mut self.swash_cache,
-                )
-                .unwrap();
-
-            {
-                let mut text_rendering_pass =
-                    graphics_command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("Text Overlay Rendering Pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: target_texture_view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Load,
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        depth_stencil_attachment: None,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                    });
-
-                self.text_renderer
-                    .render(&self.text_atlas, &self.viewport, &mut text_rendering_pass)
-                    .unwrap();
             }
         }
 

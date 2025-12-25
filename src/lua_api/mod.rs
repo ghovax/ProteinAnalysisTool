@@ -7,6 +7,7 @@ mod protein;
 
 use mlua::{Lua, Result};
 use std::sync::{Arc, RwLock};
+use log::info;
 
 use crate::protein::ProteinStore;
 
@@ -43,7 +44,7 @@ impl ScriptEngine {
         pdb_api_table.set(
             "fetch",
             lua_runtime_instance.create_function(move |_lua, requested_pdb_code: String| {
-                println!("Fetching PDB: {}...", requested_pdb_code);
+                info!("Fetching PDB: {}...", requested_pdb_code);
                 let new_store = Arc::new(RwLock::new(ProteinStore::new()));
                 let mut locked_new_store = new_store.write().unwrap();
                 match locked_new_store.fetch(&requested_pdb_code) {
@@ -52,7 +53,7 @@ impl ScriptEngine {
                         cloned_global_store.write().unwrap().add(shared_protein_handle.clone());
 
                         let locked_protein_data = shared_protein_handle.read().unwrap();
-                        println!(
+                        info!(
                             "Loaded {} with {} atoms, {} chains",
                             locked_protein_data.name,
                             locked_protein_data.atom_count(),
@@ -81,7 +82,7 @@ impl ScriptEngine {
         pdb_api_table.set(
             "load",
             lua_runtime_instance.create_function(move |_lua, requested_file_path: String| {
-                println!("Loading file: {}...", requested_file_path);
+                info!("Loading file: {}...", requested_file_path);
                 let new_store = Arc::new(RwLock::new(ProteinStore::new()));
                 let mut locked_new_store = new_store.write().unwrap();
                 match locked_new_store.load(&requested_file_path) {
@@ -90,7 +91,7 @@ impl ScriptEngine {
                         cloned_global_store.write().unwrap().add(shared_protein_handle.clone());
 
                         let locked_protein_data = shared_protein_handle.read().unwrap();
-                        println!(
+                        info!(
                             "Loaded {} with {} atoms, {} chains",
                             locked_protein_data.name,
                             locked_protein_data.atom_count(),
@@ -132,18 +133,18 @@ impl ScriptEngine {
         camera_api_table.set(
             "get_pos",
             lua_runtime_instance.create_function(move |_, ()| {
-                let camera = cloned_camera.read().unwrap();
-                let pos = camera.position();
-                Ok((pos.x, pos.y, pos.z))
+                let locked_camera_handle = cloned_camera.read().unwrap();
+                let camera_world_position = locked_camera_handle.position();
+                Ok((camera_world_position.x, camera_world_position.y, camera_world_position.z))
             })?,
         )?;
 
         let cloned_camera = camera.clone();
         camera_api_table.set(
             "set_target",
-            lua_runtime_instance.create_function(move |_, (x, y, z): (f32, f32, f32)| {
-                let mut camera = cloned_camera.write().unwrap();
-                camera.target = glam::Vec3::new(x, y, z);
+            lua_runtime_instance.create_function(move |_, (target_coordinate_x, target_coordinate_y, target_coordinate_z): (f32, f32, f32)| {
+                let mut mutable_camera_handle = cloned_camera.write().unwrap();
+                mutable_camera_handle.target = glam::Vec3::new(target_coordinate_x, target_coordinate_y, target_coordinate_z);
                 Ok(())
             })?,
         )?;
@@ -152,11 +153,11 @@ impl ScriptEngine {
         camera_api_table.set(
             "set_params",
             lua_runtime_instance.create_function(
-                move |_, (dist, yaw, pitch): (f32, f32, f32)| {
-                    let mut camera = cloned_camera.write().unwrap();
-                    camera.distance = dist;
-                    camera.yaw = yaw;
-                    camera.pitch = pitch;
+                move |_, (requested_camera_distance, requested_camera_yaw, requested_camera_pitch): (f32, f32, f32)| {
+                    let mut mutable_camera_handle = cloned_camera.write().unwrap();
+                    mutable_camera_handle.distance = requested_camera_distance;
+                    mutable_camera_handle.yaw = requested_camera_yaw;
+                    mutable_camera_handle.pitch = requested_camera_pitch;
                     Ok(())
                 },
             )?,
@@ -172,28 +173,28 @@ impl ScriptEngine {
         let cloned_camera = camera.clone();
         session_api_table.set(
             "save",
-            lua_runtime_instance.create_function(move |_, path: String| {
+            lua_runtime_instance.create_function(move |_, output_file_path: String| {
                 use std::io::Write;
-                let mut file = std::fs::File::create(&path)
-                    .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
+                let mut session_output_file = std::fs::File::create(&output_file_path)
+                    .map_err(|file_creation_error| mlua::Error::RuntimeError(file_creation_error.to_string()))?;
 
-                writeln!(file, "-- Protein Viewer Session State").unwrap();
+                writeln!(session_output_file, "-- Protein Viewer Session State").unwrap();
 
                 // Save proteins
-                let store = cloned_store.read().unwrap();
-                for (i, protein) in store.iter().enumerate() {
-                    let p = protein.read().unwrap();
-                    let var_name = format!("p{}", i);
-                    match &p.source {
-                        crate::protein::structure::ProteinSource::Rcsb(code) => {
-                            writeln!(file, "local {} = pdb.fetch(\"{}\")", var_name, code).unwrap();
+                let locked_protein_store = cloned_store.read().unwrap();
+                for (protein_index, shared_protein_handle) in locked_protein_store.iter().enumerate() {
+                    let locked_protein_data = shared_protein_handle.read().unwrap();
+                    let lua_protein_variable_name = format!("protein_object_{}", protein_index);
+                    match &locked_protein_data.source {
+                        crate::protein::structure::ProteinSource::Rcsb(pdb_code) => {
+                            writeln!(session_output_file, "local {} = pdb.fetch(\"{}\")", lua_protein_variable_name, pdb_code).unwrap();
                         }
-                        crate::protein::structure::ProteinSource::File(path) => {
-                            writeln!(file, "local {} = pdb.load(\"{}\")", var_name, path).unwrap();
+                        crate::protein::structure::ProteinSource::File(absolute_file_path) => {
+                            writeln!(session_output_file, "local {} = pdb.load(\"{}\")", lua_protein_variable_name, absolute_file_path).unwrap();
                         }
                     }
 
-                    let repr = match p.representation {
+                    let representation_mode_string = match locked_protein_data.representation {
                         crate::protein::structure::Representation::Spheres => "spheres",
                         crate::protein::structure::Representation::Backbone => "backbone",
                         crate::protein::structure::Representation::BackboneAndSpheres => "both",
@@ -202,44 +203,44 @@ impl ScriptEngine {
                         crate::protein::structure::Representation::SpaceFilling => "space-filling",
                         crate::protein::structure::Representation::Lines => "lines",
                     };
-                    writeln!(file, "{}:representation(\"{}\")", var_name, repr).unwrap();
+                    writeln!(session_output_file, "{}:representation(\"{}\")", lua_protein_variable_name, representation_mode_string).unwrap();
 
-                    match p.color_scheme {
+                    match locked_protein_data.color_scheme {
                         crate::protein::structure::ColorScheme::ByChain => {
-                            writeln!(file, "{}:color_by(\"chain\")", var_name).unwrap()
+                            writeln!(session_output_file, "{}:color_by(\"chain\")", lua_protein_variable_name).unwrap()
                         }
                         crate::protein::structure::ColorScheme::ByElement => {
-                            writeln!(file, "{}:color_by(\"element\")", var_name).unwrap()
+                            writeln!(session_output_file, "{}:color_by(\"element\")", lua_protein_variable_name).unwrap()
                         }
                         crate::protein::structure::ColorScheme::ByBFactor => {
-                            writeln!(file, "{}:color_by(\"bfactor\")", var_name).unwrap()
+                            writeln!(session_output_file, "{}:color_by(\"bfactor\")", lua_protein_variable_name).unwrap()
                         }
                         crate::protein::structure::ColorScheme::BySecondary => {
-                            writeln!(file, "{}:color_by(\"secondary\")", var_name).unwrap()
+                            writeln!(session_output_file, "{}:color_by(\"secondary\")", lua_protein_variable_name).unwrap()
                         }
-                        crate::protein::structure::ColorScheme::Uniform(c) => {
-                            writeln!(file, "{}:color({}, {}, {})", var_name, c[0], c[1], c[2])
+                        crate::protein::structure::ColorScheme::Uniform(rgb_color_components) => {
+                            writeln!(session_output_file, "{}:color({}, {}, {})", lua_protein_variable_name, rgb_color_components[0], rgb_color_components[1], rgb_color_components[2])
                                 .unwrap()
                         }
                     }
 
-                    if !p.visible {
-                        writeln!(file, "{}:hide()", var_name).unwrap();
+                    if !locked_protein_data.visible {
+                        writeln!(session_output_file, "{}:hide()", lua_protein_variable_name).unwrap();
                     }
                 }
 
-                // Save camera
-                let cam = cloned_camera.read().unwrap();
+                // Save camera state
+                let locked_camera_handle = cloned_camera.read().unwrap();
                 writeln!(
-                    file,
+                    session_output_file,
                     "camera.set_target({}, {}, {})",
-                    cam.target.x, cam.target.y, cam.target.z
+                    locked_camera_handle.target.x, locked_camera_handle.target.y, locked_camera_handle.target.z
                 )
                 .unwrap();
                 writeln!(
-                    file,
+                    session_output_file,
                     "camera.set_params({}, {}, {})",
-                    cam.distance, cam.yaw, cam.pitch
+                    locked_camera_handle.distance, locked_camera_handle.yaw, locked_camera_handle.pitch
                 )
                 .unwrap();
 
@@ -249,10 +250,10 @@ impl ScriptEngine {
 
         session_api_table.set(
             "load",
-            lua_runtime_instance.create_function(move |lua, path: String| {
-                let code = std::fs::read_to_string(&path)
-                    .map_err(|e| mlua::Error::RuntimeError(e.to_string()))?;
-                lua.load(&code).exec()
+            lua_runtime_instance.create_function(move |lua_runtime_context, session_file_path: String| {
+                let session_script_content = std::fs::read_to_string(&session_file_path)
+                    .map_err(|file_read_error| mlua::Error::RuntimeError(file_read_error.to_string()))?;
+                lua_runtime_context.load(&session_script_content).exec()
             })?,
         )?;
 
@@ -278,7 +279,7 @@ impl ScriptEngine {
                             _ => format!("{:?}", argument_value),
                         })
                         .collect();
-                    println!("[Lua] {}", formatted_output_strings.join("\t"));
+                    info!("[Lua] {}", formatted_output_strings.join("\t"));
                     Ok(())
                 },
             )?,

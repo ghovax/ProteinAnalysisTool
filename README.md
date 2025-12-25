@@ -42,8 +42,9 @@ Automated identification of hydrogen bonds based on donor-acceptor distances and
 
 ### Mouse
 
-*   **Left Click & Drag**: Rotate camera
-*   **Left Click (on Atom)**: Toggle atom selection
+*   **Left Click & Drag**: Rotate camera (Orbit)
+*   **Right Click & Drag**: Translate camera (Pan)
+*   **Left Click (on Atom)**: Toggle atom selection (Max 2 atoms)
 *   **Scroll**: Zoom in/out
 
 ### Keyboard Shortcuts
@@ -53,7 +54,7 @@ Automated identification of hydrogen bonds based on donor-acceptor distances and
 *   `2`: Backbone trace only
 *   `3`: Both Spheres and Backbone
 *   `4`: Sticks (Cylindrical bonds)
-*   `5`: Ball and Stick
+*   `5`: Ball and Stick (Default)
 *   `6`: Space-Filling (Van der Waals spheres)
 *   `7`: Lines (Wireframe bonds)
 
@@ -64,7 +65,7 @@ Automated identification of hydrogen bonds based on donor-acceptor distances and
 *   `S`: Color by Secondary structure (Helix/Sheet/Loop)
 
 #### Analysis and Surface
-*   `M`: Calculate and display distance between last two selected atoms
+*   `M`: Calculate distance between selected atoms (Logged to terminal console)
 *   `F`: Toggle Molecular Surface visibility (if computed)
 *   `R`: Reset Camera focus, clear selections and measurements
 *   `Esc`: Quit application
@@ -74,10 +75,18 @@ Automated identification of hydrogen bonds based on donor-acceptor distances and
 The application embeds a Lua engine for automation and analysis. Scripts support hot-reloading.
 
 ### Global `pdb` Module
+*   `pdb.fetch(code)`: Fetches a protein from RCSB by its PDB identifier.
+*   `pdb.load(path)`: Loads a protein from a local file (PDB or mmCIF).
+*   `pdb.list()`: Returns a table of names for all currently loaded protein identifiers.
 
-*   `pdb.fetch(code)`: Fetches a protein from RCSB by its PDB identifier
-*   `pdb.load(path)`: Loads a protein from a local file (PDB or mmCIF)
-*   `pdb.list()`: Returns a table of names for all currently loaded protein identifiers
+### Global `camera` Module
+*   `camera.get_pos()`: Returns the current camera world coordinates (x, y, z).
+*   `camera.set_target(x, y, z)`: Sets the focus point of the camera.
+*   `camera.set_params(dist, yaw, pitch)`: Sets the spherical coordinates of the camera.
+
+### Global `session` Module
+*   `session.save(path)`: Saves the current application state (proteins and camera) to a Lua script.
+*   `session.load(path)`: Restores a session by executing a previously saved script.
 
 ### Protein Object Methods (`protein:method`)
 *   `protein:select(query)`: Selects atoms using the PyMOL-style query language.
@@ -85,12 +94,15 @@ The application embeds a Lua engine for automation and analysis. Scripts support
 *   `protein:calculate_molecular_surface(resolution, threshold)`: Generates a molecular surface mesh.
 *   `protein:set_surface_visibility(visible)`: Toggles surface rendering.
 *   `protein:rmsd(other_protein)`: Calculates RMSD relative to another protein.
-*   `protein:superpose(reference_protein)`: Aligns this protein to a reference.
+*   `protein:superpose(reference_protein)`: Aligns this protein to a reference using Kabsch algorithm.
 *   `protein:ramachandran_data()`: Returns Phi/Psi angles for all residues.
 *   `protein:hydrogen_bonds()`: Detects and returns hydrogen bonds.
 *   `protein:color_by(scheme)`: Sets coloring scheme (`chain`, `element`, `bfactor`, `secondary`).
 *   `protein:color(r, g, b)`: Sets a uniform RGB color.
 *   `protein:atoms()` / `protein:residues()`: Returns detailed atomic and residue information.
+
+## Terminal Logging
+The application uses a standardized logging system. All analysis results (like distance measurements), file loading status, and Lua `print()` output are directed to the terminal console. Run with `RUST_LOG=info` to see all messages.
 
 ## Hot-Reloading
 

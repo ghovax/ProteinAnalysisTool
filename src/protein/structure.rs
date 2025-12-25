@@ -8,6 +8,7 @@ use glam::Vec3;
 use pdbtbx::{Format, ReadOptions, PDB};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use log::warn;
 
 use super::fetch::{fetch_pdb, load_file, FileFormat};
 use crate::selection::SelectionSet;
@@ -18,7 +19,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Representation {
     /// Each atom (or CA) is rendered as a sphere
-    #[default]
     Spheres,
     /// Only the backbone trace is rendered as a series of lines
     Backbone,
@@ -27,6 +27,7 @@ pub enum Representation {
     /// Cylinders for all covalent bonds
     Sticks,
     /// Spheres for atoms and cylinders for bonds
+    #[default]
     BallAndStick,
     /// Van der Waals spheres for all atoms
     SpaceFilling,
@@ -107,7 +108,7 @@ impl ProteinData {
             .map_err(|pdb_parse_error| format!("Parse error: {:?}", pdb_parse_error))?;
 
         if !parsing_warning_messages.is_empty() {
-            eprintln!(
+            warn!(
                 "Warnings while parsing {}: {:?}",
                 name, parsing_warning_messages
             );

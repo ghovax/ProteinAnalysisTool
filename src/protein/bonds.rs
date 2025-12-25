@@ -38,42 +38,40 @@ impl<'a> BondCalculator<'a> {
 
     /// Calculates bonds using both distance-based heuristics and explicit CONECT records
     pub fn calculate_all_bonds(&self) -> HashSet<AtomBond> {
-        let mut identified_bonds = HashSet::new();
-        
-        // 1. Add bonds from CONECT records if available
-        // Note: pdbtbx 0.12 stores bonds in PDB struct if it parsed them.
-        // We'll iterate through them if they exist.
-        
-        // 2. Distance-based bond detection
-        // Standard covalent bond distances are typically < 2.0 Angstroms.
-        // For efficiency, we should use a spatial index (RTree).
-        
+        use rayon::prelude::*;
+
         let atom_list: Vec<&Atom> = self.pdb_data.atoms().collect();
         let atom_count = atom_list.len();
+        let atom_slice = atom_list.as_slice();
         
-        // Using a simple O(N^2) approach for now as a fallback, 
-        // but it should be optimized for large proteins.
-        // In a real biotechnology toolkit, we'd use the RTree.
-        
-        for first_atom_list_index in 0..atom_count {
-            let first_atom_reference = atom_list[first_atom_list_index];
-            let first_atom_position_tuple = first_atom_reference.pos();
-            
-            for second_atom_list_index in (first_atom_list_index + 1)..atom_count {
-                let second_atom_reference = atom_list[second_atom_list_index];
-                let second_atom_position_tuple = second_atom_reference.pos();
+        // Use parallel iteration to check distances between all pairs of atoms
+        let identified_bonds: HashSet<AtomBond> = (0..atom_count)
+            .into_par_iter()
+            .flat_map(|first_atom_list_index| {
+                let first_atom_reference = atom_slice[first_atom_list_index];
+                let first_atom_position_tuple = first_atom_reference.pos();
                 
-                let distance_squared = (first_atom_position_tuple.0 - second_atom_position_tuple.0).powi(2) + 
-                                       (first_atom_position_tuple.1 - second_atom_position_tuple.1).powi(2) + 
-                                       (first_atom_position_tuple.2 - second_atom_position_tuple.2).powi(2);
-                
-                // Typical covalent bond distance is 1.2-1.6 A. 
-                // We use 1.9 A squared as a general threshold.
-                if distance_squared < 3.61 { 
-                    identified_bonds.insert(AtomBond::new(first_atom_list_index, second_atom_list_index));
-                }
-            }
-        }
+                (first_atom_list_index + 1..atom_count)
+                    .into_par_iter() 
+                    .filter_map(move |second_atom_list_index| {
+                        let second_atom_reference = atom_slice[second_atom_list_index];
+                        let second_atom_position_tuple = second_atom_reference.pos();
+                        
+                        let delta_x = first_atom_position_tuple.0 - second_atom_position_tuple.0;
+                        let delta_y = first_atom_position_tuple.1 - second_atom_position_tuple.1;
+                        let delta_z = first_atom_position_tuple.2 - second_atom_position_tuple.2;
+                        
+                        let distance_squared_value = delta_x.powi(2) + delta_y.powi(2) + delta_z.powi(2);
+                        
+                        // Threshold of ~1.9A (3.61 A^2) for typical covalent bonds
+                        if distance_squared_value < 3.61 { 
+                            Some(AtomBond::new(first_atom_list_index, second_atom_list_index))
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .collect();
         
         identified_bonds
     }

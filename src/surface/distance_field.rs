@@ -119,20 +119,15 @@ pub fn calculate_solvent_accessible_distance_field(
                             coordinate_z as f32,
                         ) * desired_voxel_size;
                     
-                    let mut minimum_distance_to_surface = f32::MAX;
-
-                    for (atom_index, atom_position_vector) in
-                        atom_world_positions_collection.iter().enumerate()
-                    {
-                        let distance_to_atom_center =
-                            current_voxel_world_position.distance(*atom_position_vector);
-                        let distance_to_atom_surface =
-                            distance_to_atom_center - atom_vdw_radii_collection[atom_index];
-
-                        if distance_to_atom_surface < minimum_distance_to_surface {
-                            minimum_distance_to_surface = distance_to_atom_surface;
-                        }
-                    }
+                    // Further optimization: find the minimum distance in parallel across atoms if needed,
+                    // but usually voxel-level parallelism is sufficient.
+                    let minimum_distance_to_surface = atom_world_positions_collection.iter()
+                        .enumerate()
+                        .map(|(atom_index, atom_position_vector)| {
+                            current_voxel_world_position.distance(*atom_position_vector) - atom_vdw_radii_collection[atom_index]
+                        })
+                        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                        .unwrap_or(f32::MAX);
                     
                     current_z_slice[coordinate_y * grid_dimension_x + coordinate_x] = minimum_distance_to_surface;
                 }
