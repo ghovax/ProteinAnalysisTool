@@ -1,5 +1,5 @@
 //! Lua interface for protein data
-//!
+//! 
 //! This module implements `mlua::UserData` for `LuaProtein`, allowing Lua scripts
 //! to interact with and modify protein structures loaded in the application
 
@@ -37,27 +37,27 @@ impl<'lua> mlua::FromLua<'lua> for LuaProtein {
 
 impl UserData for LuaProtein {
     fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
-        // protein:name() returns the name/ID of the protein
-        methods.add_method("name", |_, this, ()| {
+        // protein:get_protein_name() returns the name/ID of the protein
+        methods.add_method("get_protein_name", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             Ok(locked_protein_data.name.clone())
         });
 
-        // protein:atom_count() returns the total number of atoms in the protein
-        methods.add_method("atom_count", |_, this, ()| {
+        // protein:get_total_atom_count() returns the total number of atoms in the protein
+        methods.add_method("get_total_atom_count", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             Ok(locked_protein_data.atom_count())
         });
 
-        // protein:chains() returns a list of all chain identifiers in the protein
-        methods.add_method("chains", |lua_context, this, ()| {
+        // protein:get_chain_identifiers() returns a list of all chain identifiers in the protein
+        methods.add_method("get_chain_identifiers", |lua_context, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let available_chain_identifiers = locked_protein_data.chain_ids();
             lua_context.create_sequence_from(available_chain_identifiers)
         });
 
-        // protein:center_of_mass() returns the center of mass of the protein
-        methods.add_method("center_of_mass", |_, this, ()| {
+        // protein:calculate_center_of_mass() returns the center of mass of the protein
+        methods.add_method("calculate_center_of_mass", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let center_of_mass_vector = locked_protein_data.center_of_mass();
             Ok((
@@ -67,8 +67,8 @@ impl UserData for LuaProtein {
             ))
         });
 
-        // protein:bounding_box() returns the axis-aligned bounding box of the protein
-        methods.add_method("bounding_box", |_, this, ()| {
+        // protein:calculate_bounding_box_dimensions() returns the axis-aligned bounding box of the protein
+        methods.add_method("calculate_bounding_box_dimensions", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let (minimum_coordinate_bound, maximum_coordinate_bound) =
                 locked_protein_data.bounding_box();
@@ -82,37 +82,37 @@ impl UserData for LuaProtein {
             ))
         });
 
-        // protein:ca_count() returns the number of Alpha Carbon (CA) atoms
-        methods.add_method("ca_count", |_, this, ()| {
+        // protein:get_alpha_carbon_count() returns the number of Alpha Carbon (CA) atoms
+        methods.add_method("get_alpha_carbon_count", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             Ok(locked_protein_data
                 .get_alpha_carbon_positions_and_chain_identifiers()
                 .len())
         });
 
-        // protein:residue_count() returns an approximate count of residues based on CA atoms
-        methods.add_method("residue_count", |_, this, ()| {
+        // protein:get_total_residue_count() returns an approximate count of residues based on CA atoms
+        methods.add_method("get_total_residue_count", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             Ok(locked_protein_data
                 .get_alpha_carbon_positions_and_chain_identifiers()
                 .len())
         });
 
-        // protein:show() and protein:hide() control whether the protein is rendered
-        methods.add_method_mut("show", |_, this, ()| {
+        // protein:set_visibility_on() and protein:set_visibility_off() control whether the protein is rendered
+        methods.add_method_mut("set_visibility_on", |_, this, ()| {
             let mut mutable_protein_data = this.inner.write().unwrap();
             mutable_protein_data.visible = true;
             Ok(())
         });
 
-        methods.add_method_mut("hide", |_, this, ()| {
+        methods.add_method_mut("set_visibility_off", |_, this, ()| {
             let mut mutable_protein_data = this.inner.write().unwrap();
             mutable_protein_data.visible = false;
             Ok(())
         });
 
-        // protein:info() returns a summary string with protein information
-        methods.add_method("info", |_, this, ()| {
+        // protein:get_summary_information() returns a summary string with protein information
+        methods.add_method("get_summary_information", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let (minimum_coordinate_bound, maximum_coordinate_bound) = locked_protein_data.bounding_box();
             let bounding_box_dimensions = maximum_coordinate_bound - minimum_coordinate_bound;
@@ -128,8 +128,8 @@ impl UserData for LuaProtein {
             ))
         });
 
-        // protein:atoms() returns a table containing detailed information for every atom
-        methods.add_method("atoms", |lua_context, this, ()| {
+        // protein:get_all_atom_data() returns a table containing detailed information for every atom
+        methods.add_method("get_all_atom_data", |lua_context, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let lua_atoms_collection_table = lua_context.create_table()?;
 
@@ -156,9 +156,9 @@ impl UserData for LuaProtein {
             Ok(lua_atoms_collection_table)
         });
 
-        // protein:residues(chain_id) returns a table containing information for residues, optionally filtered by chain
+        // protein:get_all_residue_data(chain_id) returns a table containing information for residues, optionally filtered by chain
         methods.add_method(
-            "residues",
+            "get_all_residue_data",
             |lua_context, this, chain_identifier_filter: Option<String>| {
                 let locked_protein_data = this.inner.read().unwrap();
                 let lua_residues_collection_table = lua_context.create_table()?;
@@ -195,22 +195,133 @@ impl UserData for LuaProtein {
             },
         );
 
-        // protein:select(query) returns a LuaSelection object matching the PyMOL-style selection query
-        methods.add_method("select", |_, this, selection_query_string: String| {
+        // protein:select_atoms_by_query(query) returns a LuaSelection object matching the PyMOL-style selection query
+        methods.add_method("select_atoms_by_query", |_, this, selection_query_string: String| {
             let locked_protein_data = this.inner.read().unwrap();
             let selection_set = locked_protein_data.select_atoms_from_string(&selection_query_string)
                 .map_err(|error_message| mlua::Error::RuntimeError(error_message))?;
             
-            Ok(LuaSelection::new(selection_set))
+            Ok(LuaSelection::new(selection_set, this.inner.clone()))
         });
 
-        // protein:representation(mode) sets the representation mode
+        // protein:calculate_solvent_accessible_surface_area() returns the total Solvent Accessible Surface Area in square Angstroms
+        methods.add_method("calculate_solvent_accessible_surface_area", |_, this, (probe_radius, points): (Option<f32>, Option<usize>)| {
+            let locked_protein_data = this.inner.read().unwrap();
+            let probe_radius_value = probe_radius.unwrap_or(1.4);
+            let number_of_points = points.unwrap_or(100);
+            let sasa_value = crate::analysis::sasa::calculate_protein_solvent_accessible_surface_area(
+                &locked_protein_data,
+                probe_radius_value,
+                number_of_points
+            );
+            Ok(sasa_value)
+        });
+
+        // protein:export_analysis_report_to_json(path) exports analysis data to a JSON file
+        methods.add_method("export_analysis_report_to_json", |_, this, file_system_path: String| {
+            let locked_protein_data = this.inner.read().unwrap();
+            crate::analysis::export::export_protein_analysis_to_json(&locked_protein_data, &file_system_path)
+                .map_err(|error_message| mlua::Error::RuntimeError(error_message))
+        });
+
+        // protein:export_residue_data_to_csv(path) exports analysis data to a CSV file
+        methods.add_method("export_residue_data_to_csv", |_, this, file_system_path: String| {
+            let locked_protein_data = this.inner.read().unwrap();
+            crate::analysis::export::export_residue_data_to_csv(&locked_protein_data, &file_system_path)
+                .map_err(|error_message| mlua::Error::RuntimeError(error_message))
+        });
+
+        // protein:get_sequence_for_chain(chain_id) returns the primary sequence of a chain
+        methods.add_method("get_sequence_for_chain", |_, this, chain_identifier: String| {
+            let locked_protein_data = this.inner.read().unwrap();
+            crate::analysis::sequence::extract_sequence_from_chain(&locked_protein_data, &chain_identifier)
+                .map_err(|error_message| mlua::Error::RuntimeError(error_message))
+        });
+
+        // protein:generate_fasta_formatted_sequence() returns the protein sequence in FASTA format
+        methods.add_method("generate_fasta_formatted_sequence", |_, this, ()| {
+            let locked_protein_data = this.inner.read().unwrap();
+            Ok(crate::analysis::sequence::generate_fasta_formatted_string(&locked_protein_data))
+        });
+
+        // protein:detect_salt_bridge_interactions() returns a list of detected salt bridges
+        methods.add_method("detect_salt_bridge_interactions", |lua_context, this, distance_threshold: Option<f32>| {
+            let locked_protein_data = this.inner.read().unwrap();
+            let threshold_value = distance_threshold.unwrap_or(4.0);
+            let detected_salt_bridges = crate::analysis::interactions::detect_salt_bridge_interactions(&locked_protein_data, threshold_value);
+            
+            let lua_salt_bridges_table = lua_context.create_table()?;
+            for (bond_index, current_bridge) in detected_salt_bridges.into_iter().enumerate() {
+                let bridge_data_table = lua_context.create_table()?;
+                bridge_data_table.set("donor_index", current_bridge.donor_atom_index)?;
+                bridge_data_table.set("acceptor_index", current_bridge.acceptor_atom_index)?;
+                bridge_data_table.set("distance", current_bridge.inter_atomic_distance)?;
+                lua_salt_bridges_table.set(bond_index + 1, bridge_data_table)?;
+            }
+            Ok(lua_salt_bridges_table)
+        });
+
+        // protein:perform_secondary_structure_assignment() re-calculates secondary structure assignment
+        methods.add_method_mut("perform_secondary_structure_assignment", |_, this, ()| {
+            let mut mutable_protein_data = this.inner.write().unwrap();
+            crate::analysis::dssp::assign_secondary_structure_to_protein(&mut mutable_protein_data);
+            Ok(())
+        });
+
+        // protein:calculate_root_mean_square_fluctuation(selection) calculates Root-Mean-Square Fluctuation across all models for a selection
+        methods.add_method("calculate_root_mean_square_fluctuation", |lua_context, this, selection: LuaSelection| {
+            let locked_protein_data = this.inner.read().unwrap();
+            
+            // Collect coordinates for selected atoms across all models
+            let mut model_coordinates_collection = Vec::new();
+            for current_model in locked_protein_data.pdb.models() {
+                let mut atom_positions_in_model = Vec::new();
+                // This is slightly complex because selection indices are global or relative to a specific model?
+                // Assuming selection indices are global indices into pdb.atoms()
+                for &atom_index in &selection.inner_selection_set.atom_indices {
+                    if let Some(atom_reference) = current_model.atoms().nth(atom_index) {
+                        let pos = atom_reference.pos();
+                        atom_positions_in_model.push(glam::Vec3::new(pos.0 as f32, pos.1 as f32, pos.2 as f32));
+                    }
+                }
+                if !atom_positions_in_model.is_empty() {
+                    model_coordinates_collection.push(atom_positions_in_model);
+                }
+            }
+
+            if model_coordinates_collection.is_empty() {
+                return Ok(lua_context.create_table()?);
+            }
+
+            let model_count = model_coordinates_collection.len();
+            let atom_count = model_coordinates_collection[0].len();
+            let rmsf_results_table = lua_context.create_table()?;
+
+            for atom_index in 0..atom_count {
+                let mut average_position_vector = glam::Vec3::ZERO;
+                for model_index in 0..model_count {
+                    average_position_vector += model_coordinates_collection[model_index][atom_index];
+                }
+                average_position_vector /= model_count as f32;
+
+                let mut sum_of_squared_deviations = 0.0;
+                for model_index in 0..model_count {
+                    sum_of_squared_deviations += model_coordinates_collection[model_index][atom_index].distance_squared(average_position_vector);
+                }
+                let rmsf_value = (sum_of_squared_deviations / model_count as f32).sqrt();
+                rmsf_results_table.set(atom_index + 1, rmsf_value)?;
+            }
+
+            Ok(rmsf_results_table)
+        });
+
+        // protein:set_representation_mode(mode) sets the representation mode
         // Available modes are "spheres", "backbone", "both", "sticks", "ball-and-stick", "space-filling", and "lines"
         methods.add_method_mut(
-            "representation",
+            "set_representation_mode",
             |_, this, requested_representation_mode: String| {
                 let mut mutable_protein_data = this.inner.write().unwrap();
-                mutable_protein_data.representation =
+                mutable_protein_data.representation = 
                     match requested_representation_mode.to_lowercase().as_str() {
                         "spheres" | "sphere" => Representation::Spheres,
                         "backbone" | "trace" | "line_trace" => Representation::Backbone,
@@ -230,8 +341,8 @@ impl UserData for LuaProtein {
             },
         );
 
-        // protein:ramachandran_data() returns a list of Phi/Psi points for all residues
-        methods.add_method("ramachandran_data", |lua_context, this, ()| {
+        // protein:calculate_ramachandran_dihedral_angles() returns a list of Phi/Psi points for all residues
+        methods.add_method("calculate_ramachandran_dihedral_angles", |lua_context, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let backbone_dihedral_results_collection = crate::analysis::dihedrals::calculate_all_backbone_dihedrals(&locked_protein_data);
             
@@ -253,8 +364,8 @@ impl UserData for LuaProtein {
             Ok(lua_ramachandran_points_table)
         });
 
-        // protein:hydrogen_bonds() returns a list of detected hydrogen bonds
-        methods.add_method("hydrogen_bonds", |lua_context, this, ()| {
+        // protein:detect_geometric_hydrogen_bonds() returns a list of detected hydrogen bonds
+        methods.add_method("detect_geometric_hydrogen_bonds", |lua_context, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let identified_hydrogen_bonds = crate::analysis::hydrogen_bonds::detect_hydrogen_bonds_in_protein(&locked_protein_data);
             
@@ -297,9 +408,9 @@ impl UserData for LuaProtein {
             Ok(())
         });
 
-        // protein:rmsd(other_protein) calculates the RMSD between two proteins based on Alpha Carbons from the first model
-        // protein:rmsd(other_protein, selection) calculates the RMSD between two proteins, optionally restricted to a selection
-        methods.add_method("rmsd", |_, this, (other_lua_protein, optional_selection): (LuaProtein, Option<LuaSelection>)| {
+        // protein:calculate_root_mean_square_deviation(other_protein) calculates the RMSD between two proteins based on Alpha Carbons from the first model
+        // protein:calculate_root_mean_square_deviation(other_protein, selection) calculates the RMSD between two proteins, optionally restricted to a selection
+        methods.add_method("calculate_root_mean_square_deviation", |_, this, (other_lua_protein, optional_selection): (LuaProtein, Option<LuaSelection>)| {
             let reference_protein_locked_data = this.inner.read().unwrap();
             let moving_protein_locked_data = other_lua_protein.inner.read().unwrap();
             
@@ -332,8 +443,8 @@ impl UserData for LuaProtein {
             ).map_err(|error_message| mlua::Error::RuntimeError(error_message))
         });
 
-        // protein:superpose(reference_protein, selection) superimposes this protein onto a reference using Kabsch algorithm
-        methods.add_method_mut("superpose", |_, this, (reference_lua_protein, optional_selection): (LuaProtein, Option<LuaSelection>)| {
+        // protein:superimpose_onto_reference_structure(reference_protein, selection) superimposes this protein onto a reference using Kabsch algorithm
+        methods.add_method_mut("superimpose_onto_reference_structure", |_, this, (reference_lua_protein, optional_selection): (LuaProtein, Option<LuaSelection>)| {
             let mut moving_protein_mutable_data = this.inner.write().unwrap();
             let reference_protein_locked_data = reference_lua_protein.inner.read().unwrap();
             
@@ -368,7 +479,7 @@ impl UserData for LuaProtein {
             let reference_center_of_mass = reference_protein_locked_data.center_of_mass();
             let moving_center_of_mass = moving_protein_mutable_data.center_of_mass();
             
-            let reference_centered_positions: Vec<_> = reference_alpha_carbon_positions.iter()
+            let reference_centered_positions: Vec<_> = reference_alpha_carbon_positions.iter() 
                 .map(|&position_vector| position_vector - reference_center_of_mass)
                 .collect();
             let moving_centered_positions: Vec<_> = moving_alpha_carbon_positions.iter()
@@ -402,9 +513,9 @@ impl UserData for LuaProtein {
             Ok(())
         });
 
-        // protein:color_by(scheme) sets the color scheme
+        // protein:set_color_scheme_by_property(scheme) sets the color scheme
         // Available schemes are "chain", "element", "bfactor", and "secondary"
-        methods.add_method_mut("color_by", |_, this, requested_color_scheme_mode: String| {
+        methods.add_method_mut("set_color_scheme_by_property", |_, this, requested_color_scheme_mode: String| {
             let mut mutable_protein_data = this.inner.write().unwrap();
             mutable_protein_data.color_scheme = match requested_color_scheme_mode.to_lowercase().as_str() {
                 "chain" | "chains" => ColorScheme::ByChain,
@@ -421,9 +532,9 @@ impl UserData for LuaProtein {
             Ok(())
         });
 
-        // protein:color(r, g, b) sets a uniform RGB color for the entire protein
+        // protein:set_uniform_rgb_color(r, g, b) sets a uniform RGB color for the entire protein
         methods.add_method_mut(
-            "color",
+            "set_uniform_rgb_color",
             |_,
              this,
              (red_color_component, green_color_component, blue_color_component): (

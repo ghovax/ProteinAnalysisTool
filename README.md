@@ -34,9 +34,20 @@ Compare and align structures using the **Kabsch Algorithm**.
 ### 6. Geometric Hydrogen Bond Detection
 Automated identification of hydrogen bonds based on donor-acceptor distances and geometric criteria.
 
-### 7. Structural Analysis
+### 7. Physical & Chemical Interactions
+Detection of complex biochemical interactions beyond simple bonding.
+*   **Salt Bridges**: Identification of charged residue interactions (Arg/Lys and Asp/Glu).
+
+### 8. Structural Analysis
 *   **Dihedral Angles**: Precise calculation of Phi, Psi, and Omega angles for every residue.
 *   **Ramachandran Data**: Export backbone torsion data for validation and plotting.
+*   **SASA**: Solvent Accessible Surface Area calculation using the Shrake-Rupley algorithm.
+*   **RMSF**: Root-Mean-Square Fluctuation analysis across structural ensembles (NMR models or MD snapshots).
+
+### 9. Data Manipulation & Export
+Tools for programmatically modifying and exporting structural data.
+*   **Atomic Manipulation**: Direct translation and rotation of selections.
+*   **Structured Export**: Built-in support for JSON, CSV, and FASTA formats.
 
 ## Controls
 
@@ -75,35 +86,52 @@ Automated identification of hydrogen bonds based on donor-acceptor distances and
 The application embeds a Lua engine for automation and analysis. Scripts support hot-reloading.
 
 ### Global `pdb` Module
-*   `pdb.fetch(code)`: Fetches a protein from RCSB by its PDB identifier.
-*   `pdb.load(path)`: Loads a protein from a local file (PDB or mmCIF).
-*   `pdb.list()`: Returns a table of names for all currently loaded protein identifiers.
+*   `pdb.fetch_protein_from_rcsb(code)`: Fetches a protein from RCSB by its PDB identifier.
+*   `pdb.load_protein_from_local_file(path)`: Loads a protein from a local file (PDB or mmCIF).
+*   `pdb.get_loaded_protein_identifiers()`: Returns a list of all currently loaded protein identifiers.
 
 ### Global `camera` Module
-*   `camera.get_pos()`: Returns the current camera world coordinates (x, y, z).
-*   `camera.set_target(x, y, z)`: Sets the focus point of the camera.
-*   `camera.set_params(dist, yaw, pitch)`: Sets the spherical coordinates of the camera.
+*   `camera.get_camera_world_position()`: Returns the current camera world coordinates (x, y, z).
+*   `camera.set_camera_focus_target(x, y, z)`: Sets the focus point of the camera.
+*   `camera.set_camera_spherical_parameters(dist, yaw, pitch)`: Sets the spherical coordinates of the camera.
 
 ### Global `session` Module
-*   `session.save(path)`: Saves the current application state (proteins and camera) to a Lua script.
-*   `session.load(path)`: Restores a session by executing a previously saved script.
+*   `session.save_application_session(path)`: Saves current state to a Lua script.
+*   `session.load_application_session(path)`: Restores a session by executing a previously saved script.
 
 ### Protein Object Methods (`protein:method`)
-*   `protein:select(query)`: Selects atoms using the PyMOL-style query language.
-*   `protein:representation(mode)`: Sets visual mode (`spheres`, `backbone`, `both`, `sticks`, `ball-and-stick`, `space-filling`, `lines`).
-*   `protein:calculate_molecular_surface(resolution, threshold)`: Generates a molecular surface mesh.
-*   `protein:set_surface_visibility(visible)`: Toggles surface rendering.
-*   `protein:rmsd(other_protein)`: Calculates RMSD relative to another protein.
-*   `protein:superpose(reference_protein)`: Aligns this protein to a reference using Kabsch algorithm.
-*   `protein:ramachandran_data()`: Returns Phi/Psi angles for all residues.
-*   `protein:hydrogen_bonds()`: Detects and returns hydrogen bonds.
-*   `protein:color_by(scheme)`: Sets coloring scheme (`chain`, `element`, `bfactor`, `secondary`).
-*   `protein:color(r, g, b)`: Sets a uniform RGB color.
-*   `protein:atoms()` / `protein:residues()`: Returns detailed atomic and residue information.
+*   `protein:get_protein_name()`: Returns the name/ID of the protein.
+*   `protein:get_total_atom_count()`: Returns the total number of atoms.
+*   `protein:select_atoms_by_query(query)`: Returns a Selection object matching the PyMOL-style query.
+*   `protein:set_representation_mode(mode)`: Sets visual mode (`spheres`, `backbone`, `sticks`, etc.).
+*   `protein:set_color_scheme_by_property(scheme)`: Sets coloring scheme (`chain`, `element`, `bfactor`, `secondary`).
+*   `protein:set_uniform_rgb_color(r, g, b)`: Sets a uniform RGB color.
+*   `protein:calculate_molecular_surface(res, threshold)`: Generates a molecular surface mesh.
+*   `protein:calculate_solvent_accessible_surface_area()`: Returns total SASA in square Angstroms.
+*   `protein:calculate_root_mean_square_deviation(other, selection)`: Calculates RMSD.
+*   `protein:calculate_root_mean_square_fluctuation(selection)`: Calculates RMSF across all models.
+*   `protein:calculate_ramachandran_dihedral_angles()`: Returns Phi/Psi angles for all residues.
+*   `protein:superimpose_onto_reference_structure(ref, selection)`: Aligns structure using Kabsch algorithm.
+*   `protein:detect_geometric_hydrogen_bonds()`: Detects and returns hydrogen bonds.
+*   `protein:detect_salt_bridge_interactions()`: Identifies charged residue interactions.
+*   `protein:export_analysis_report_to_json(path)`: Exports detailed data to JSON.
+*   `protein:export_residue_data_to_csv(path)`: Exports residue angles to CSV.
+*   `protein:get_sequence_for_chain(id)` / `protein:generate_fasta_formatted_sequence()`: Sequence analysis and export.
+*   `protein:set_visibility_on()` / `protein:set_visibility_off()`: Controls rendering.
+*   `protein:get_all_atom_data()` / `protein:get_all_residue_data()`: Returns detailed structural tables.
+
+### Selection Object Methods (`selection:method`)
+*   `selection:get_selected_atom_count()`: Returns number of atoms.
+*   `selection:calculate_geometric_centroid()`: Returns (x, y, z) coordinates.
+*   `selection:calculate_distance_to_other_selection(other)`: Distance between selection centroids.
+*   `selection:calculate_angle_between_three_selections(s2, s3)`: Angle between three centroids.
+*   `selection:calculate_dihedral_between_four_selections(s2, s3, s4)`: Dihedral between four centroids.
+*   `selection:translate_selected_atoms(x, y, z)`: Moves atoms by given offset.
+*   `selection:rotate_selected_atoms(angle, axis_x...origin_x...)`: Rotates atoms around an axis.
+*   `selection:create_union_with_other_selection(other)`: Returns new combined selection.
 
 ## Terminal Logging
-The application uses a standardized logging system. All analysis results (like distance measurements), file loading status, and Lua `print()` output are directed to the terminal console. Run with `RUST_LOG=info` to see all messages.
+The application uses a standardized logging system. All analysis results, file loading status, and Lua `print()` output are directed to the terminal console. Run with `RUST_LOG=info` to see all messages.
 
 ## Hot-Reloading
-
-The application watches the `scripts/` directory and the current directory for changes to `.lua` files. Saving a script will automatically re-execute it in the running application.
+The application watches for changes to `.lua` files in the `scripts/` and root directories, re-executing them automatically upon save.
