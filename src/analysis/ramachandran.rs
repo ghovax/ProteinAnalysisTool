@@ -1,6 +1,5 @@
 //! Calculation of Phi/Psi angles for Ramachandran plots
 
-use pdbtbx::ContainsAtomConformerResidueChain;
 use crate::protein::structure::ProteinData;
 use super::dihedrals::{calculate_dihedral_angle_between_points, BackboneDihedralAngles};
 

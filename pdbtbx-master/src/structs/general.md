@@ -1,24 +1,27 @@
 # PDB Hierarchy
+
 As explained in depth in the [documentation of CCTBX](https://cci.lbl.gov/cctbx_docs/iotbx/iotbx.pdb.html#iotbx-pdb-hierarchy)
 it can be quite hard to properly define a hierarchy for PDB files which works for all files.
 This library follows the hierarchy presented by CCTBX [`Grosse-Kunstleve, R. W. et al`], but renames the `residue_group` and
 `atom_group` constructs. This gives the following hierarchy, with the main identifying characteristics annotated per level.
-* [PDB]
-    * [Model] \
-      Serial number
-        * [Chain] \
-          Id
-            * [Residue] (analogous to `residue_group` in CCTBX) \
-              Serial number \
-              Insertion code
-                * [Conformer] (analogous to `atom_group` in CCTBX) \
-                  Name \
-                  Alternative location
-                    * [Atom] \
-                      Serial number \
-                      Name
+
+- [PDB]
+  - [Model] \
+    Serial number
+    - [Chain] \
+      Id
+      - [Residue] (analogous to `residue_group` in CCTBX) \
+        Serial number \
+        Insertion code
+        - [Conformer] (analogous to `atom_group` in CCTBX) \
+          Name \
+          Alternative location
+          - [Atom] \
+            Serial number \
+            Name
 
 # Iterating over the PDB Hierarchy
+
 ```rust
 use pdbtbx::*;
 let (mut pdb, _errors) = pdbtbx::open("example-pdbs/1ubq.pdb").unwrap();
@@ -58,4 +61,5 @@ for mut hierarchy in pdb.atoms_with_hierarchy_mut() {
 ```
 
 # References
+
 1. [`Grosse-Kunstleve, R. W. et al`] Grosse-Kunstleve, R. W., Sauter, N. K., Moriarty, N. W., & Adams, P. D. (2002). TheComputational Crystallography Toolbox: crystallographic algorithms in a reusable software framework. Journal of Applied Crystallography, 35(1), 126–136. [https://doi.org/10.1107/s0021889801017824](https://doi.org/10.1107/s0021889801017824)

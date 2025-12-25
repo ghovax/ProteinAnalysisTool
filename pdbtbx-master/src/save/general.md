@@ -5,8 +5,9 @@ Once you have your [`PDB`] struct you can save it in a couple of ways. The outpu
 The other extra option is choosing the `*_raw` functions. These do not validate the [`PDB`] structs before saving and output directly to a [`std::io::BufWriter`]. The validation uses the [`validate_pdb()`] or [`validate()`] functions internally.
 
 ## All functions
-| Format |  Normal | Without validation |
-| --- | --- | --- |
-| Based on input | [`save()`] | ... |
-| PDB | [`save_pdb()`] | [`save_pdb_raw()`] |
-| mmCIF | [`save_mmcif()`] | [`save_mmcif_raw()`] | 
+
+| Format         | Normal           | Without validation   |
+| -------------- | ---------------- | -------------------- |
+| Based on input | [`save()`]       | ...                  |
+| PDB            | [`save_pdb()`]   | [`save_pdb_raw()`]   |
+| mmCIF          | [`save_mmcif()`] | [`save_mmcif_raw()`] |

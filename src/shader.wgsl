@@ -231,3 +231,36 @@ fn fs_cylinder(input_fragment: CylinderOutput) -> @location(0) vec4<f32> {
     
     return vec4<f32>(final_fragment_color, 1.0);
 }
+
+// Surface rendering (marching cubes mesh)
+
+struct SurfaceInput {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec3<f32>,
+}
+
+struct SurfaceOutput {
+    @builtin(position) clip_space_position: vec4<f32>,
+    @location(0) color: vec3<f32>,
+    @location(1) world_normal: vec3<f32>,
+}
+
+@vertex
+fn vs_surface(vertex_input: SurfaceInput) -> SurfaceOutput {
+    var shader_output_data: SurfaceOutput;
+    shader_output_data.clip_space_position = global_uniforms.view_projection_matrix * vec4<f32>(vertex_input.position, 1.0);
+    shader_output_data.color = vertex_input.color;
+    shader_output_data.world_normal = vertex_input.normal;
+    return shader_output_data;
+}
+
+@fragment
+fn fs_surface(fragment_input: SurfaceOutput) -> @location(0) vec4<f32> {
+    let light_source_direction = normalize(vec3<f32>(0.5, 1.0, 0.8));
+    let ambient_lighting_factor = 0.4;
+    let diffuse_lighting_intensity = max(dot(normalize(fragment_input.world_normal), light_source_direction), 0.0) * 0.6;
+    
+    let final_color_rgb = fragment_input.color * (ambient_lighting_factor + diffuse_lighting_intensity);
+    return vec4<f32>(final_color_rgb, 1.0);
+}

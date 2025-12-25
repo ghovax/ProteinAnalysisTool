@@ -131,6 +131,10 @@ pub struct Renderer {
     sphere_count: u32,
     cylinder_instance_buffer: wgpu::Buffer,
     cylinder_count: u32,
+    surface_render_pipeline: wgpu::RenderPipeline,
+    surface_vertex_buffer: wgpu::Buffer,
+    surface_index_buffer: wgpu::Buffer,
+    surface_indices_count: u32,
     line_vertex_buffer: wgpu::Buffer,
     line_vertex_count: u32,
     depth_stencil_texture_view: wgpu::TextureView,
@@ -333,6 +337,63 @@ impl Renderer {
                 cache: None,
             });
 
+        // Surface pipeline
+        let surface_render_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Surface Pipeline"),
+                layout: Some(&render_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader_module,
+                    entry_point: "vs_surface",
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<crate::surface::SurfaceVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                offset: 0,
+                                shader_location: 0,
+                                format: wgpu::VertexFormat::Float32x3,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 12,
+                                shader_location: 1,
+                                format: wgpu::VertexFormat::Float32x3,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 24,
+                                shader_location: 2,
+                                format: wgpu::VertexFormat::Float32x3,
+                            },
+                        ],
+                    }],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader_module,
+                    entry_point: "fs_surface",
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: surface_format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
+
         // Line pipeline
         let line_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Line Pipeline"),
@@ -398,6 +459,20 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
+        let surface_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Surface Vertex Buffer"),
+            size: 4096 * 1024, // 4MB initial size
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let surface_index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Surface Index Buffer"),
+            size: 4096 * 1024, // 4MB initial size
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let line_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Line Buffer"),
             size: 1024 * 1024,
@@ -426,6 +501,7 @@ impl Renderer {
             queue,
             sphere_render_pipeline,
             cylinder_render_pipeline,
+            surface_render_pipeline,
             line_render_pipeline,
             global_uniform_buffer,
             global_uniform_bind_group,
@@ -433,6 +509,9 @@ impl Renderer {
             sphere_count: 0,
             cylinder_instance_buffer,
             cylinder_count: 0,
+            surface_vertex_buffer,
+            surface_index_buffer,
+            surface_indices_count: 0,
             line_vertex_buffer,
             line_vertex_count: 0,
             depth_stencil_texture_view,
@@ -481,6 +560,8 @@ impl Renderer {
     ) {
         let mut sphere_instances_collection = Vec::new();
         let mut cylinder_instances_collection = Vec::new();
+        let mut surface_vertices_collection = Vec::new();
+        let mut surface_indices_collection = Vec::new();
         let mut line_vertices_collection = Vec::new();
 
         let mut atom_world_positions_lookup_table = HashMap::new();
@@ -489,6 +570,15 @@ impl Renderer {
             let protein_locked_data = protein_shared_reference.read().unwrap();
             if !protein_locked_data.visible {
                 continue;
+            }
+
+            // Update surface data if present and visible
+            if protein_locked_data.molecular_surface_mesh.is_surface_visible && !protein_locked_data.molecular_surface_mesh.is_mesh_empty() {
+                let base_vertex_index = surface_vertices_collection.len() as u32;
+                surface_vertices_collection.extend_from_slice(&protein_locked_data.molecular_surface_mesh.surface_vertices_collection);
+                for &index_value in &protein_locked_data.molecular_surface_mesh.surface_indices_collection {
+                    surface_indices_collection.push(index_value + base_vertex_index);
+                }
             }
 
             let protein_identifier_name = &protein_locked_data.name;
@@ -565,7 +655,7 @@ impl Renderer {
             match active_representation_mode {
                 Representation::Spheres | Representation::BackboneAndSpheres => {
                     // Only Alpha Carbons (CA)
-                    for (atom_index, (atom_world_position, atom_color, is_atom_selected, atom_name, _)) in protein_atom_data_list.iter().enumerate() {
+                    for (atom_world_position, atom_color, is_atom_selected, atom_name, _) in &protein_atom_data_list {
                         if atom_name == "CA" {
                             sphere_instances_collection.push(SphereInstance {
                                 position: atom_world_position.to_array(),
@@ -759,6 +849,32 @@ impl Renderer {
             }
         }
 
+        // Update GPU surface buffers
+        self.surface_indices_count = surface_indices_collection.len() as u32;
+        if !surface_vertices_collection.is_empty() {
+            let serialized_surface_vertex_data = bytemuck::cast_slice(&surface_vertices_collection);
+            if serialized_surface_vertex_data.len() as u64 > self.surface_vertex_buffer.size() {
+                self.surface_vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Surface Vertex Buffer"),
+                    contents: serialized_surface_vertex_data,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                });
+            } else {
+                self.queue.write_buffer(&self.surface_vertex_buffer, 0, serialized_surface_vertex_data);
+            }
+
+            let serialized_surface_index_data = bytemuck::cast_slice(&surface_indices_collection);
+            if serialized_surface_index_data.len() as u64 > self.surface_index_buffer.size() {
+                self.surface_index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Surface Index Buffer"),
+                    contents: serialized_surface_index_data,
+                    usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                });
+            } else {
+                self.queue.write_buffer(&self.surface_index_buffer, 0, serialized_surface_index_data);
+            }
+        }
+
         // Update GPU sphere instance buffer
         self.sphere_count = sphere_instances_collection.len() as u32;
         if !sphere_instances_collection.is_empty() {
@@ -879,6 +995,15 @@ impl Renderer {
                 active_render_pass.set_bind_group(0, &self.global_uniform_bind_group, &[]);
                 active_render_pass.set_vertex_buffer(0, self.cylinder_instance_buffer.slice(..));
                 active_render_pass.draw(0..4, 0..self.cylinder_count);
+            }
+
+            // Draw molecular surfaces
+            if self.surface_indices_count > 0 {
+                active_render_pass.set_pipeline(&self.surface_render_pipeline);
+                active_render_pass.set_bind_group(0, &self.global_uniform_bind_group, &[]);
+                active_render_pass.set_vertex_buffer(0, self.surface_vertex_buffer.slice(..));
+                active_render_pass.set_index_buffer(self.surface_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                active_render_pass.draw_indexed(0..self.surface_indices_count, 0, 0..1);
             }
         }
 

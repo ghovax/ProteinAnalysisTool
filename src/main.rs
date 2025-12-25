@@ -8,6 +8,7 @@ mod protein;
 mod renderer;
 mod selection;
 mod analysis;
+mod surface;
 
 use clap::Parser;
 use notify::Watcher;

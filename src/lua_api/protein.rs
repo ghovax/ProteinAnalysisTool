@@ -269,6 +269,33 @@ impl UserData for LuaProtein {
             Ok(lua_hydrogen_bonds_table)
         });
 
+        // protein:calculate_molecular_surface(resolution, threshold) generates a molecular surface mesh
+        methods.add_method_mut("calculate_molecular_surface", |_, this, (voxel_resolution, isosurface_threshold): (Option<f32>, Option<f32>)| {
+            let mut mutable_protein_data = this.inner.write().unwrap();
+            let resolution_value = voxel_resolution.unwrap_or(0.5);
+            let threshold_value = isosurface_threshold.unwrap_or(0.0);
+            
+            // These tables will be provided by the user as per request. 
+            // For now, I'll use empty/dummy ones to keep the logic structure correct.
+            let edge_intersection_lookup_table = [0u32; 256];
+            let triangulation_lookup_table = [[-1i32; 16]; 256];
+
+            mutable_protein_data.compute_molecular_surface_mesh(
+                resolution_value, 
+                threshold_value,
+                &edge_intersection_lookup_table,
+                &triangulation_lookup_table
+            );
+            Ok(())
+        });
+
+        // protein:set_surface_visibility(visible) controls whether the molecular surface is rendered
+        methods.add_method_mut("set_surface_visibility", |_, this, should_be_visible: bool| {
+            let mut mutable_protein_data = this.inner.write().unwrap();
+            mutable_protein_data.molecular_surface_mesh.is_surface_visible = should_be_visible;
+            Ok(())
+        });
+
         // protein:rmsd(other_protein) calculates the RMSD between two proteins based on Alpha Carbons
         methods.add_method("rmsd", |_, this, other_lua_protein: LuaProtein| {
             let reference_protein_locked_data = this.inner.read().unwrap();

@@ -81,6 +81,8 @@ pub struct ProteinData {
     pub color_scheme: ColorScheme,
     /// Cached set of covalent bonds identified in the structure
     pub identified_atom_bonds: std::collections::HashSet<super::bonds::AtomBond>,
+    /// The generated molecular surface mesh for this protein
+    pub molecular_surface_mesh: crate::surface::MolecularSurfaceMesh,
 }
 
 impl ProteinData {
@@ -122,7 +124,34 @@ impl ProteinData {
             representation: Representation::default(),
             color_scheme: ColorScheme::default(),
             identified_atom_bonds,
+            molecular_surface_mesh: crate::surface::MolecularSurfaceMesh::new(),
         })
+    }
+
+    /// Generates a molecular surface mesh for the protein structure
+    pub fn compute_molecular_surface_mesh(
+        &mut self,
+        voxel_resolution_angstroms: f32,
+        isosurface_threshold_value: f32,
+        edge_intersection_lookup_table: &[u32; 256],
+        triangulation_lookup_table: &[[i32; 16]; 256],
+    ) {
+        let distance_field_grid = crate::surface::distance_field::calculate_solvent_accessible_distance_field(
+            self,
+            voxel_resolution_angstroms,
+            4.0, // Grid padding in angstroms
+        );
+
+        let (surface_vertices, surface_indices) = crate::surface::marching_cubes::extract_isosurface_from_distance_field(
+            &distance_field_grid,
+            isosurface_threshold_value,
+            edge_intersection_lookup_table,
+            triangulation_lookup_table,
+        );
+
+        self.molecular_surface_mesh.surface_vertices_collection = surface_vertices;
+        self.molecular_surface_mesh.surface_indices_collection = surface_indices;
+        self.molecular_surface_mesh.is_surface_visible = true;
     }
 
     /// Returns the total number of atoms in the structure
