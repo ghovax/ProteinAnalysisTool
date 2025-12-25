@@ -23,26 +23,26 @@ impl LuaProtein {
 
 impl UserData for LuaProtein {
     fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
-        // p:name() returns the name/ID of the protein
+        // protein:name() returns the name/ID of the protein
         methods.add_method("name", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             Ok(locked_protein_data.name.clone())
         });
 
-        // p:atom_count() returns the total number of atoms in the protein
+        // protein:atom_count() returns the total number of atoms in the protein
         methods.add_method("atom_count", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             Ok(locked_protein_data.atom_count())
         });
 
-        // p:chains() returns a list of all chain identifiers in the protein
+        // protein:chains() returns a list of all chain identifiers in the protein
         methods.add_method("chains", |lua_context, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let available_chain_identifiers = locked_protein_data.chain_ids();
             lua_context.create_sequence_from(available_chain_identifiers)
         });
 
-        // p:center_of_mass() returns the center of mass of the protein
+        // protein:center_of_mass() returns the center of mass of the protein
         methods.add_method("center_of_mass", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let center_of_mass_vector = locked_protein_data.center_of_mass();
@@ -53,7 +53,7 @@ impl UserData for LuaProtein {
             ))
         });
 
-        // p:bounding_box() returns the axis-aligned bounding box of the protein
+        // protein:bounding_box() returns the axis-aligned bounding box of the protein
         methods.add_method("bounding_box", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let (minimum_coordinate_bound, maximum_coordinate_bound) =
@@ -68,7 +68,7 @@ impl UserData for LuaProtein {
             ))
         });
 
-        // p:ca_count() returns the number of Alpha Carbon (CA) atoms
+        // protein:ca_count() returns the number of Alpha Carbon (CA) atoms
         methods.add_method("ca_count", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             Ok(locked_protein_data
@@ -76,7 +76,7 @@ impl UserData for LuaProtein {
                 .len())
         });
 
-        // p:residue_count() returns an approximate count of residues based on CA atoms
+        // protein:residue_count() returns an approximate count of residues based on CA atoms
         methods.add_method("residue_count", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             Ok(locked_protein_data
@@ -84,7 +84,7 @@ impl UserData for LuaProtein {
                 .len())
         });
 
-        // p:show() and p:hide() control whether the protein is rendered
+        // protein:show() and protein:hide() control whether the protein is rendered
         methods.add_method_mut("show", |_, this, ()| {
             let mut mutable_protein_data = this.inner.write().unwrap();
             mutable_protein_data.visible = true;
@@ -97,7 +97,7 @@ impl UserData for LuaProtein {
             Ok(())
         });
 
-        // p:info() returns a summary string with protein information
+        // protein:info() returns a summary string with protein information
         methods.add_method("info", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let (minimum_coordinate_bound, maximum_coordinate_bound) = locked_protein_data.bounding_box();
@@ -114,7 +114,7 @@ impl UserData for LuaProtein {
             ))
         });
 
-        // p:atoms() returns a table containing detailed information for every atom
+        // protein:atoms() returns a table containing detailed information for every atom
         methods.add_method("atoms", |lua_context, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let lua_atoms_collection_table = lua_context.create_table()?;
@@ -142,7 +142,7 @@ impl UserData for LuaProtein {
             Ok(lua_atoms_collection_table)
         });
 
-        // p:residues(chain_id) returns a table containing information for residues, optionally filtered by chain
+        // protein:residues(chain_id) returns a table containing information for residues, optionally filtered by chain
         methods.add_method(
             "residues",
             |lua_context, this, chain_identifier_filter: Option<String>| {
@@ -181,7 +181,7 @@ impl UserData for LuaProtein {
             },
         );
 
-        // p:representation(mode) sets the representation mode
+        // protein:representation(mode) sets the representation mode
         // Available modes are "spheres", "backbone", and "both"
         methods.add_method_mut(
             "representation",
@@ -203,7 +203,7 @@ impl UserData for LuaProtein {
             },
         );
 
-        // p:color_by(scheme) sets the color scheme
+        // protein:color_by(scheme) sets the color scheme
         // Available schemes are "chain", "element", "bfactor", and "secondary"
         methods.add_method_mut("color_by", |_, this, requested_color_scheme_mode: String| {
             let mut mutable_protein_data = this.inner.write().unwrap();
@@ -222,7 +222,7 @@ impl UserData for LuaProtein {
             Ok(())
         });
 
-        // p:color(r, g, b) sets a uniform RGB color for the entire protein
+        // protein:color(r, g, b) sets a uniform RGB color for the entire protein
         methods.add_method_mut(
             "color",
             |_,

@@ -444,4 +444,15 @@ impl ProteinStore {
     pub fn iter(&self) -> impl Iterator<Item = &Arc<RwLock<ProteinData>>> {
         self.proteins.values()
     }
+
+    /// Clears all proteins from the store
+    pub fn clear(&mut self) {
+        self.proteins.clear();
+    }
+
+    /// Adds an existing protein to the store
+    pub fn add(&mut self, protein: Arc<RwLock<ProteinData>>) {
+        let name = protein.read().unwrap().name.clone();
+        self.proteins.insert(name, protein);
+    }
 }

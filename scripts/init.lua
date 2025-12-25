@@ -2,7 +2,7 @@
 -- This script runs on startup and when modified (hot-reload)
 
 -- Fetch a protein from the PDB
-local fetched_protein_data = pdb.fetch("1AKE")
+local fetched_protein_data = pdb.fetch("8W1Z")
 
 -- Set representation mode
 -- Options: "spheres", "backbone", "both"

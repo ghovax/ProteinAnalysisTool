@@ -14,6 +14,12 @@ use crate::renderer::Camera;
 
 pub use protein::LuaProtein;
 
+/// Events sent from the script engine to the main application
+pub enum ScriptEvent {
+    /// Request to open a new window with a specific protein and camera
+    NewWindow(Arc<RwLock<ProteinStore>>, Arc<RwLock<Camera>>),
+}
+
 /// The Lua script engine
 pub struct ScriptEngine {
     lua: Lua,
@@ -24,6 +30,7 @@ impl ScriptEngine {
     pub fn new(
         protein_data_store: Arc<RwLock<ProteinStore>>,
         camera: Arc<RwLock<Camera>>,
+        event_sender: crossbeam_channel::Sender<ScriptEvent>,
     ) -> Result<Self> {
         let lua_runtime_instance = Lua::new();
 
@@ -31,14 +38,19 @@ impl ScriptEngine {
         let pdb_api_table = lua_runtime_instance.create_table()?;
 
         // pdb.fetch(code) fetches a protein from RCSB by its PDB identifier
-        let cloned_protein_store_reference = protein_data_store.clone();
+        let cloned_event_sender = event_sender.clone();
+        let cloned_global_store = protein_data_store.clone();
         pdb_api_table.set(
             "fetch",
             lua_runtime_instance.create_function(move |_lua, requested_pdb_code: String| {
                 println!("Fetching PDB: {}...", requested_pdb_code);
-                let mut locked_protein_store = cloned_protein_store_reference.write().unwrap();
-                match locked_protein_store.fetch(&requested_pdb_code) {
+                let new_store = Arc::new(RwLock::new(ProteinStore::new()));
+                let mut locked_new_store = new_store.write().unwrap();
+                match locked_new_store.fetch(&requested_pdb_code) {
                     Ok(shared_protein_handle) => {
+                        // Also add to global store for listing/saving
+                        cloned_global_store.write().unwrap().add(shared_protein_handle.clone());
+
                         let locked_protein_data = shared_protein_handle.read().unwrap();
                         println!(
                             "Loaded {} with {} atoms, {} chains",
@@ -47,6 +59,13 @@ impl ScriptEngine {
                             locked_protein_data.chain_ids().len()
                         );
                         drop(locked_protein_data);
+
+                        // Create a new camera for this window
+                        let new_camera = Arc::new(RwLock::new(Camera::new(1.0))); // Aspect will be set on resize
+
+                        // Signal to open a new window
+                        let _ = cloned_event_sender.send(ScriptEvent::NewWindow(new_store.clone(), new_camera));
+
                         Ok(LuaProtein::new(shared_protein_handle.clone()))
                     }
                     Err(lua_runtime_error_message) => {
@@ -57,14 +76,19 @@ impl ScriptEngine {
         )?;
 
         // pdb.load(path) loads a protein from a local file (PDB or mmCIF)
-        let cloned_protein_store_reference = protein_data_store.clone();
+        let cloned_event_sender = event_sender.clone();
+        let cloned_global_store = protein_data_store.clone();
         pdb_api_table.set(
             "load",
             lua_runtime_instance.create_function(move |_lua, requested_file_path: String| {
                 println!("Loading file: {}...", requested_file_path);
-                let mut locked_protein_store = cloned_protein_store_reference.write().unwrap();
-                match locked_protein_store.load(&requested_file_path) {
+                let new_store = Arc::new(RwLock::new(ProteinStore::new()));
+                let mut locked_new_store = new_store.write().unwrap();
+                match locked_new_store.load(&requested_file_path) {
                     Ok(shared_protein_handle) => {
+                        // Also add to global store for listing/saving
+                        cloned_global_store.write().unwrap().add(shared_protein_handle.clone());
+
                         let locked_protein_data = shared_protein_handle.read().unwrap();
                         println!(
                             "Loaded {} with {} atoms, {} chains",
@@ -73,6 +97,13 @@ impl ScriptEngine {
                             locked_protein_data.chain_ids().len()
                         );
                         drop(locked_protein_data);
+
+                        // Create a new camera for this window
+                        let new_camera = Arc::new(RwLock::new(Camera::new(1.0))); // Aspect will be set on resize
+
+                        // Signal to open a new window
+                        let _ = cloned_event_sender.send(ScriptEvent::NewWindow(new_store.clone(), new_camera));
+
                         Ok(LuaProtein::new(shared_protein_handle.clone()))
                     }
                     Err(lua_runtime_error_message) => {

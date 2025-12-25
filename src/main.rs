@@ -9,16 +9,17 @@ mod renderer;
 
 use clap::Parser;
 use notify::Watcher;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::WindowBuilder,
+    window::{WindowBuilder, WindowId},
 };
 
-use lua_api::ScriptEngine;
+use lua_api::{ScriptEngine, ScriptEvent};
 use protein::{ColorScheme, ProteinStore, Representation};
 use renderer::{Camera, Renderer};
 
@@ -30,23 +31,13 @@ struct Args {
     script: Option<String>,
 }
 
-/// The main application state
-struct App {
-    /// WGPU surface for rendering
+/// State associated with a single window
+struct WindowState {
+    window: Arc<winit::window::Window>,
     surface: wgpu::Surface<'static>,
-    /// The GPU device handle
-    device: Arc<wgpu::Device>,
-    /// The GPU command queue
-    queue: Arc<wgpu::Queue>,
-    /// Current surface configuration
     config: wgpu::SurfaceConfiguration,
-    /// The protein renderer
     renderer: Renderer,
-    /// The interactive camera
     camera: Arc<RwLock<Camera>>,
-    /// The Lua script engine for automation
-    script_engine: ScriptEngine,
-    /// The shared store containing all loaded proteins
     store: Arc<RwLock<ProteinStore>>,
 
     /// Selected atoms: (protein_name, atom_index_in_ca_positions)
@@ -58,37 +49,22 @@ struct App {
     mouse_pressed: bool,
     /// The last recorded mouse position for rotation calculations
     last_mouse_pos: Option<(f64, f64)>,
-
-    /// Receiver for script hot-reload notifications
-    script_rx: crossbeam_channel::Receiver<PathBuf>,
-    /// The file system watcher for scripts
-    _watcher: notify::RecommendedWatcher,
 }
 
-impl App {
-    /// Initializes a new instance of the application
-    async fn new(main_window: Arc<winit::window::Window>, initial_script: Option<String>) -> Self {
-        let window_inner_size = main_window.inner_size();
-        let wgpu_instance = wgpu::Instance::default();
-        let rendering_surface = wgpu_instance.create_surface(main_window.clone()).unwrap();
-        let graphics_adapter = wgpu_instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&rendering_surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .expect("Failed to find adapter");
+impl WindowState {
+    fn new(
+        window: Arc<winit::window::Window>,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        store: Arc<RwLock<ProteinStore>>,
+        camera: Arc<RwLock<Camera>>,
+    ) -> Self {
+        let window_inner_size = window.inner_size();
+        let surface = instance.create_surface(window.clone()).unwrap();
 
-        let (graphics_device, command_queue) = graphics_adapter
-            .request_device(&wgpu::DeviceDescriptor::default(), None)
-            .await
-            .expect("Failed to create device");
-
-        let graphics_device = Arc::new(graphics_device);
-        let command_queue = Arc::new(command_queue);
-
-        let surface_capabilities = rendering_surface.get_capabilities(&graphics_adapter);
+        let surface_capabilities = surface.get_capabilities(adapter);
         let preferred_surface_format = surface_capabilities
             .formats
             .iter()
@@ -96,7 +72,7 @@ impl App {
             .copied()
             .unwrap_or(surface_capabilities.formats[0]);
 
-        let surface_configuration = wgpu::SurfaceConfiguration {
+        let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: preferred_surface_format,
             width: window_inner_size.width.max(1),
@@ -106,85 +82,38 @@ impl App {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-        rendering_surface.configure(&graphics_device, &surface_configuration);
+        surface.configure(&device, &config);
 
-        let main_renderer = Renderer::new(
-            graphics_device.clone(),
-            command_queue.clone(),
+        let renderer = Renderer::new(
+            device.clone(),
+            queue.clone(),
             preferred_surface_format,
             window_inner_size.width,
             window_inner_size.height,
         );
 
-        let main_camera = Arc::new(RwLock::new(Camera::new(
-            window_inner_size.width as f32 / window_inner_size.height as f32,
-        )));
-
-        let protein_data_store = Arc::new(RwLock::new(ProteinStore::new()));
-        let lua_script_engine = ScriptEngine::new(protein_data_store.clone(), main_camera.clone())
-            .expect("Failed to create Lua engine");
-
-        // Set up file watcher for hot-reload
-        let (script_path_sender, script_path_receiver) = crossbeam_channel::unbounded::<PathBuf>();
-        let mut file_system_watcher =
-            notify::recommended_watcher(move |watcher_result: notify::Result<notify::Event>| {
-                if let Ok(notify_event) = watcher_result {
-                    if notify_event.kind.is_modify() {
-                        for modified_file_path in notify_event.paths {
-                            if modified_file_path
-                                .extension()
-                                .map(|extension| extension == "lua")
-                                .unwrap_or(false)
-                            {
-                                let _ = script_path_sender.send(modified_file_path);
-                            }
-                        }
-                    }
-                }
-            })
-            .expect("Failed to create watcher");
-
-        // Watch scripts directory and current directory
-        let _ = file_system_watcher.watch(
-            std::path::Path::new("scripts"),
-            notify::RecursiveMode::Recursive,
-        );
-        let _ = file_system_watcher.watch(
-            std::path::Path::new("."),
-            notify::RecursiveMode::NonRecursive,
-        );
-
-        // Run initial script if provided
-        if let Some(script_path) = initial_script {
-            if let Err(script_error_message) = lua_script_engine.run_file(&script_path) {
-                eprintln!("Script error: {}", script_error_message);
-            }
-        }
+        // Ensure camera aspect ratio is correct for the window size
+        camera.write().unwrap().set_aspect(window_inner_size.width as f32 / window_inner_size.height as f32);
 
         Self {
-            surface: rendering_surface,
-            device: graphics_device,
-            queue: command_queue,
-            config: surface_configuration,
-            renderer: main_renderer,
-            camera: main_camera,
-            script_engine: lua_script_engine,
-            store: protein_data_store,
+            window,
+            surface,
+            config,
+            renderer,
+            camera,
+            store,
             selected_atoms: Vec::new(),
             measurements: Vec::new(),
             mouse_pressed: false,
             last_mouse_pos: None,
-            script_rx: script_path_receiver,
-            _watcher: file_system_watcher,
         }
     }
 
-    /// Resizes the application surface and updates the renderer and camera
-    fn resize(&mut self, physical_window_size: winit::dpi::PhysicalSize<u32>) {
+    fn resize(&mut self, device: &wgpu::Device, physical_window_size: winit::dpi::PhysicalSize<u32>) {
         if physical_window_size.width > 0 && physical_window_size.height > 0 {
             self.config.width = physical_window_size.width;
             self.config.height = physical_window_size.height;
-            self.surface.configure(&self.device, &self.config);
+            self.surface.configure(device, &self.config);
             self.renderer
                 .resize(physical_window_size.width, physical_window_size.height);
             self.camera
@@ -194,20 +123,7 @@ impl App {
         }
     }
 
-    /// Updates the application state, including script hot-reloads and camera focus
     fn update(&mut self) {
-        // Check for script hot-reload
-        while let Ok(reloaded_script_path) = self.script_rx.try_recv() {
-            println!("Reloading: {:?}", reloaded_script_path);
-            if let Some(reloaded_script_path_string) = reloaded_script_path.to_str() {
-                if let Err(hot_reload_error) =
-                    self.script_engine.run_file(reloaded_script_path_string)
-                {
-                    eprintln!("Script error: {}", hot_reload_error);
-                }
-            }
-        }
-
         // Update renderer with current protein data
         {
             let locked_protein_store = self.store.read().unwrap();
@@ -238,8 +154,7 @@ impl App {
         }
     }
 
-    /// Renders the current frame to the surface
-    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    fn render(&mut self, queue: &wgpu::Queue) -> Result<(), wgpu::SurfaceError> {
         let surface_texture_output = self.surface.get_current_texture()?;
         let texture_view_for_rendering = surface_texture_output
             .texture
@@ -315,14 +230,12 @@ impl App {
             self.config.width,
             self.config.height,
         );
-        self.queue
-            .submit(std::iter::once(rendered_graphics_command_buffer));
+        queue.submit(std::iter::once(rendered_graphics_command_buffer));
         surface_texture_output.present();
 
         Ok(())
     }
 
-    /// Handles mouse button input events
     fn handle_mouse_input(
         &mut self,
         element_press_state: ElementState,
@@ -411,7 +324,6 @@ impl App {
         }
     }
 
-    /// Handles cursor movement events for camera rotation
     fn handle_mouse_move(&mut self, cursor_screen_position: (f64, f64)) {
         if self.mouse_pressed {
             if let Some((previous_mouse_x, previous_mouse_y)) = self.last_mouse_pos {
@@ -428,16 +340,13 @@ impl App {
         self.last_mouse_pos = Some(cursor_screen_position);
     }
 
-    /// Handles mouse scroll events for camera zoom
     fn handle_scroll(&mut self, scroll_delta_value: f32) {
         self.camera.write().unwrap().zoom(scroll_delta_value);
     }
 
-    /// Handles keyboard input events for various shortcuts
     fn handle_key(&mut self, pressed_physical_keycode: KeyCode) {
         match pressed_physical_keycode {
             KeyCode::KeyR => {
-                // Reset camera and selection
                 self.selected_atoms.clear();
                 self.measurements.clear();
                 let mut camera = self.camera.write().unwrap();
@@ -457,31 +366,14 @@ impl App {
                     camera.focus_on(protein_center_of_mass, bounding_sphere_radius);
                 }
             }
-            // Representation modes
-            KeyCode::Digit1 => {
-                self.set_all_representation(Representation::Spheres);
-            }
-            KeyCode::Digit2 => {
-                self.set_all_representation(Representation::Backbone);
-            }
-            KeyCode::Digit3 => {
-                self.set_all_representation(Representation::BackboneAndSpheres);
-            }
-            // Color schemes
-            KeyCode::KeyC => {
-                self.set_all_color_scheme(ColorScheme::ByChain);
-            }
-            KeyCode::KeyB => {
-                self.set_all_color_scheme(ColorScheme::ByBFactor);
-            }
-            KeyCode::KeyE => {
-                self.set_all_color_scheme(ColorScheme::ByElement);
-            }
-            KeyCode::KeyS => {
-                self.set_all_color_scheme(ColorScheme::BySecondary);
-            }
+            KeyCode::Digit1 => self.set_all_representation(Representation::Spheres),
+            KeyCode::Digit2 => self.set_all_representation(Representation::Backbone),
+            KeyCode::Digit3 => self.set_all_representation(Representation::BackboneAndSpheres),
+            KeyCode::KeyC => self.set_all_color_scheme(ColorScheme::ByChain),
+            KeyCode::KeyB => self.set_all_color_scheme(ColorScheme::ByBFactor),
+            KeyCode::KeyE => self.set_all_color_scheme(ColorScheme::ByElement),
+            KeyCode::KeyS => self.set_all_color_scheme(ColorScheme::BySecondary),
             KeyCode::KeyM => {
-                // Calculate distance between the last two selected atoms
                 if self.selected_atoms.len() >= 2 {
                     let second_atom_selection_index = self.selected_atoms.len() - 1;
                     let first_atom_selection_index = self.selected_atoms.len() - 2;
@@ -489,14 +381,11 @@ impl App {
                         .push((first_atom_selection_index, second_atom_selection_index));
                 }
             }
-            KeyCode::Escape => {
-                std::process::exit(0);
-            }
+            KeyCode::Escape => std::process::exit(0),
             _ => {}
         }
     }
 
-    /// Sets the representation mode for all loaded proteins
     fn set_all_representation(&self, target_representation_mode: Representation) {
         let locked_protein_store = self.store.read().unwrap();
         for protein_shared_handle in locked_protein_store.iter() {
@@ -505,7 +394,6 @@ impl App {
         }
     }
 
-    /// Sets the color scheme for all loaded proteins
     fn set_all_color_scheme(&self, target_color_scheme: ColorScheme) {
         let locked_protein_store = self.store.read().unwrap();
         for protein_shared_handle in locked_protein_store.iter() {
@@ -515,83 +403,242 @@ impl App {
     }
 }
 
-/// The main application event loop
-async fn run(initial_script: Option<String>) {
-    let main_event_loop = EventLoop::new().unwrap();
-    let application_window = Arc::new(
-        WindowBuilder::new()
-            .with_title("Protein Viewer")
-            .with_inner_size(winit::dpi::LogicalSize::new(1280, 800))
-            .build(&main_event_loop)
-            .unwrap(),
-    );
+/// The main application state managing multiple windows
+struct App {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    windows: HashMap<WindowId, WindowState>,
+    script_engine: ScriptEngine,
+    global_store: Arc<RwLock<ProteinStore>>,
+    global_camera: Arc<RwLock<Camera>>,
+    script_rx: crossbeam_channel::Receiver<PathBuf>,
+    script_event_rx: crossbeam_channel::Receiver<ScriptEvent>,
+    _watcher: notify::RecommendedWatcher,
+}
 
-    let mut application_state = App::new(application_window.clone(), initial_script).await;
+impl App {
+    async fn new() -> Self {
+        let wgpu_instance = wgpu::Instance::default();
+        let graphics_adapter = wgpu_instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .expect("Failed to find adapter");
 
-    main_event_loop.set_control_flow(ControlFlow::Poll);
-    let _ = main_event_loop.run(
-        move |winit_event, event_loop_window_target| match winit_event {
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => event_loop_window_target.exit(),
-                WindowEvent::Resized(new_window_size) => application_state.resize(new_window_size),
-                WindowEvent::MouseInput {
-                    state: element_press_state,
-                    button: mouse_button_identifier,
-                    ..
-                } => application_state
-                    .handle_mouse_input(element_press_state, mouse_button_identifier),
-                WindowEvent::CursorMoved {
-                    position: cursor_screen_position,
-                    ..
-                } => application_state
-                    .handle_mouse_move((cursor_screen_position.x, cursor_screen_position.y)),
-                WindowEvent::MouseWheel {
-                    delta: scroll_delta_value,
-                    ..
-                } => {
-                    let calculated_scroll_amount = match scroll_delta_value {
-                        MouseScrollDelta::LineDelta(_, y) => y,
-                        MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 100.0,
-                    };
-                    application_state.handle_scroll(calculated_scroll_amount);
-                }
-                WindowEvent::KeyboardInput {
-                    event:
-                        KeyEvent {
-                            physical_key: PhysicalKey::Code(pressed_physical_keycode),
-                            state: ElementState::Pressed,
-                            ..
-                        },
-                    ..
-                } => application_state.handle_key(pressed_physical_keycode),
-                WindowEvent::RedrawRequested => {
-                    application_state.update();
-                    match application_state.render() {
-                        Ok(_) => {}
-                        Err(wgpu::SurfaceError::Lost) => {
-                            application_state.resize(winit::dpi::PhysicalSize {
-                                width: application_state.config.width,
-                                height: application_state.config.height,
-                            })
-                        }
-                        Err(wgpu::SurfaceError::OutOfMemory) => event_loop_window_target.exit(),
-                        Err(wgpu_render_error) => {
-                            eprintln!("Render error: {:?}", wgpu_render_error)
+        let (graphics_device, command_queue) = graphics_adapter
+            .request_device(&wgpu::DeviceDescriptor::default(), None)
+            .await
+            .expect("Failed to create device");
+
+        let graphics_device = Arc::new(graphics_device);
+        let command_queue = Arc::new(command_queue);
+
+        let (script_event_tx, script_event_rx) = crossbeam_channel::unbounded();
+        
+        let global_store = Arc::new(RwLock::new(ProteinStore::new()));
+        let global_camera = Arc::new(RwLock::new(Camera::new(1.0)));
+        
+        let lua_script_engine = ScriptEngine::new(global_store.clone(), global_camera.clone(), script_event_tx)
+            .expect("Failed to create Lua engine");
+
+        let (script_path_sender, script_path_receiver) = crossbeam_channel::unbounded::<PathBuf>();
+        let mut file_system_watcher =
+            notify::recommended_watcher(move |watcher_result: notify::Result<notify::Event>| {
+                if let Ok(notify_event) = watcher_result {
+                    if notify_event.kind.is_modify() {
+                        for modified_file_path in notify_event.paths {
+                            if modified_file_path
+                                .extension()
+                                .map(|extension| extension == "lua")
+                                .unwrap_or(false)
+                            {
+                                let _ = script_path_sender.send(modified_file_path);
+                            }
                         }
                     }
                 }
-                _ => {}
-            },
-            Event::AboutToWait => {
-                application_window.request_redraw();
+            })
+            .expect("Failed to create watcher");
+
+        let _ = file_system_watcher.watch(
+            std::path::Path::new("scripts"),
+            notify::RecursiveMode::Recursive,
+        );
+        let _ = file_system_watcher.watch(
+            std::path::Path::new("."),
+            notify::RecursiveMode::NonRecursive,
+        );
+
+        Self {
+            instance: wgpu_instance,
+            adapter: graphics_adapter,
+            device: graphics_device,
+            queue: command_queue,
+            windows: HashMap::new(),
+            script_engine: lua_script_engine,
+            global_store,
+            global_camera,
+            script_rx: script_path_receiver,
+            script_event_rx,
+            _watcher: file_system_watcher,
+        }
+    }
+
+    fn handle_script_events(&mut self, event_loop: &winit::event_loop::EventLoopWindowTarget<()>) {
+        while let Ok(event) = self.script_event_rx.try_recv() {
+            match event {
+                ScriptEvent::NewWindow(store, camera) => {
+                    let window = Arc::new(
+                        WindowBuilder::new()
+                            .with_title("Protein Viewer")
+                            .with_inner_size(winit::dpi::LogicalSize::new(1280, 800))
+                            .build(event_loop)
+                            .unwrap(),
+                    );
+                    let window_id = window.id();
+                    let window_state = WindowState::new(
+                        window,
+                        &self.instance,
+                        &self.adapter,
+                        self.device.clone(),
+                        self.queue.clone(),
+                        store,
+                        camera,
+                    );
+                    self.windows.insert(window_id, window_state);
+                }
             }
-            _ => {}
+        }
+    }
+
+    fn update(&mut self, event_loop: &winit::event_loop::EventLoopWindowTarget<()>) {
+        // Debounce script hot-reload: drain the channel and only keep the last path
+        let mut last_reloaded_path = None;
+        while let Ok(reloaded_script_path) = self.script_rx.try_recv() {
+            last_reloaded_path = Some(reloaded_script_path);
+        }
+
+        if let Some(reloaded_script_path) = last_reloaded_path {
+            println!("Reloading: {:?}", reloaded_script_path);
+            if let Some(reloaded_script_path_string) = reloaded_script_path.to_str() {
+                // DISCARD any pending window creation events from the previous run
+                while self.script_event_rx.try_recv().is_ok() {}
+
+                // RESET STATE: Close all windows and clear global store on reload
+                self.windows.clear();
+                self.global_store.write().unwrap().clear();
+
+                if let Err(hot_reload_error) =
+                    self.script_engine.run_file(reloaded_script_path_string)
+                {
+                    eprintln!("Script error: {}", hot_reload_error);
+                }
+            }
+        }
+
+        self.handle_script_events(event_loop);
+
+        for window_state in self.windows.values_mut() {
+            window_state.update();
+        }
+    }
+}
+
+async fn run(initial_script: Option<String>) {
+    let main_event_loop = EventLoop::new().unwrap();
+    let mut app = App::new().await;
+
+    // Run the initial script if provided, otherwise fallback to init.lua
+    if let Some(script_path) = initial_script {
+        if let Err(e) = app.script_engine.run_file(&script_path) {
+            eprintln!("Error running script {}: {}", script_path, e);
+        }
+    } else if std::path::Path::new("scripts/init.lua").exists() {
+        if let Err(e) = app.script_engine.run_file("scripts/init.lua") {
+            eprintln!("Error running scripts/init.lua: {}", e);
+        }
+    }
+
+    main_event_loop.set_control_flow(ControlFlow::Poll);
+    let _ = main_event_loop.run(
+        move |winit_event, event_loop_window_target| {
+            match winit_event {
+                Event::WindowEvent { window_id, event } => {
+                    if let Some(window_state) = app.windows.get_mut(&window_id) {
+                        match event {
+                            WindowEvent::CloseRequested => {
+                                app.windows.remove(&window_id);
+                                if app.windows.is_empty() {
+                                    // Optionally exit if last window closed, 
+                                    // but we might want to keep the script engine running for new windows
+                                }
+                            },
+                            WindowEvent::Resized(new_window_size) => window_state.resize(&app.device, new_window_size),
+                            WindowEvent::MouseInput {
+                                state,
+                                button,
+                                ..
+                            } => window_state.handle_mouse_input(state, button),
+                            WindowEvent::CursorMoved {
+                                position,
+                                ..
+                            } => window_state.handle_mouse_move((position.x, position.y)),
+                            WindowEvent::MouseWheel {
+                                delta,
+                                ..
+                            } => {
+                                let scroll = match delta {
+                                    MouseScrollDelta::LineDelta(_, y) => y,
+                                    MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 100.0,
+                                };
+                                window_state.handle_scroll(scroll);
+                            }
+                            WindowEvent::KeyboardInput {
+                                event:
+                                    KeyEvent {
+                                        physical_key: PhysicalKey::Code(code),
+                                        state: ElementState::Pressed,
+                                        ..
+                                    },
+                                ..
+                            } => window_state.handle_key(code),
+                            WindowEvent::RedrawRequested => {
+                                match window_state.render(&app.queue) {
+                                    Ok(_) => {}
+                                    Err(wgpu::SurfaceError::Lost) => {
+                                        window_state.resize(&app.device, window_state.window.inner_size())
+                                    }
+                                    Err(wgpu::SurfaceError::OutOfMemory) => {
+                                        event_loop_window_target.exit();
+                                    }
+                                    Err(e) => eprintln!("Render error: {:?}", e),
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                },
+                Event::AboutToWait => {
+                    app.update(event_loop_window_target);
+                    for window_state in app.windows.values() {
+                        window_state.window.request_redraw();
+                    }
+                }
+                _ => {}
+            }
         },
     );
 }
 
-/// Application entry point
 fn main() {
+
     let args = Args::parse();
+
     pollster::block_on(run(args.script));
+
 }

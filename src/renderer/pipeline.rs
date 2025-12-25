@@ -324,7 +324,7 @@ impl Renderer {
             wgpu::MultisampleState::default(),
             None,
         );
-        let text_buffer = glyphon::Buffer::new(&mut font_system, glyphon::Metrics::new(24.0, 30.0));
+        let text_buffer = glyphon::Buffer::new(&mut font_system, glyphon::Metrics::new(32.0, 40.0));
         let viewport = glyphon::Viewport::new(&device, &cache);
 
         Self {

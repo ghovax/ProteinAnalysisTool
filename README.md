@@ -32,18 +32,18 @@ The application embeds a Lua engine for automation and analysis. Scripts can be 
 * `pdb.load(path)`: Loads a protein from a local file (PDB or mmCIF)
 * `pdb.list()`: Returns a table of names for all currently loaded protein identifiers
 
-### Protein Object Methods (`p:method`)
-* `p:name()`: Returns the name/ID of the protein
-* `p:info()`: Returns a summary string with protein information
-* `p:atom_count()`: Returns the total number of atoms
-* `p:residue_count()`: Returns an approximate count of residues
-* `p:chains()`: Returns a table of chain identifiers
-* `p:show()` / `p:hide()`: Controls visibility
-* `p:representation(mode)`: Sets visual mode ("spheres", "backbone", "both")
-* `p:color_by(scheme)`: Sets coloring scheme ("chain", "element", "bfactor", "secondary")
-* `p:color(r, g, b)`: Sets a uniform RGB color
-* `p:atoms()`: Returns a detailed table of all atoms
-* `p:residues(chain_id)`: Returns a table of residues, optionally filtered by chain
+### Protein Object Methods (`protein:method`)
+* `protein:name()`: Returns the name/ID of the protein
+* `protein:info()`: Returns a summary string with protein information
+* `protein:atom_count()`: Returns the total number of atoms
+* `protein:residue_count()`: Returns an approximate count of residues
+* `protein:chains()`: Returns a table of chain identifiers
+* `protein:show()` / `protein:hide()`: Controls visibility
+* `protein:representation(mode)`: Sets visual mode ("spheres", "backbone", "both")
+* `protein:color_by(scheme)`: Sets coloring scheme ("chain", "element", "bfactor", "secondary")
+* `protein:color(r, g, b)`: Sets a uniform RGB color
+* `protein:atoms()`: Returns a detailed table of all atoms
+* `protein:residues(chain_id)`: Returns a table of residues, optionally filtered by chain
 
 ## Hot-Reloading
 
