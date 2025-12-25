@@ -5,6 +5,8 @@
 -- 1YYF is an NMR structure with multiple models, 1UBQ is a single model.
 local reference_protein = pdb.fetch("1YYF")
 local moving_protein = pdb.fetch("1YYF")
+pdb.fetch("1UBQ")
+pdb.fetch("9B1Z")
 
 -- 2. Setting up initial visual representations
 reference_protein:representation("ball-and-stick")

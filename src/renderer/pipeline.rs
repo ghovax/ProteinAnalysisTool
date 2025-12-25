@@ -5,7 +5,7 @@
 
 use pdbtbx::{ContainsAtomConformer, ContainsAtomConformerResidue, ContainsAtomConformerResidueChain};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use wgpu::util::DeviceExt;
 
 use super::Camera;
@@ -117,6 +117,21 @@ fn bfactor_to_color(
     }
 }
 
+/// Resources dedicated to a single viewport's rendering
+struct ViewportResources {
+    global_uniform_buffer: wgpu::Buffer,
+    global_uniform_bind_group: wgpu::BindGroup,
+    sphere_instance_buffer: wgpu::Buffer,
+    sphere_count: u32,
+    cylinder_instance_buffer: wgpu::Buffer,
+    cylinder_count: u32,
+    surface_vertex_buffer: wgpu::Buffer,
+    surface_index_buffer: wgpu::Buffer,
+    surface_indices_count: u32,
+    line_vertex_buffer: wgpu::Buffer,
+    line_vertex_count: u32,
+}
+
 /// The main protein renderer
 pub struct Renderer {
     device: Arc<wgpu::Device>,
@@ -124,22 +139,92 @@ pub struct Renderer {
     sphere_render_pipeline: wgpu::RenderPipeline,
     cylinder_render_pipeline: wgpu::RenderPipeline,
     line_render_pipeline: wgpu::RenderPipeline,
-    global_uniform_buffer: wgpu::Buffer,
-    global_uniform_bind_group: wgpu::BindGroup,
-    sphere_instance_buffer: wgpu::Buffer,
-    sphere_count: u32,
-    cylinder_instance_buffer: wgpu::Buffer,
-    cylinder_count: u32,
     surface_render_pipeline: wgpu::RenderPipeline,
-    surface_vertex_buffer: wgpu::Buffer,
-    surface_index_buffer: wgpu::Buffer,
-    surface_indices_count: u32,
-    line_vertex_buffer: wgpu::Buffer,
-    line_vertex_count: u32,
+
+    /// Collection of resources for each viewport
+    viewport_resources_collection: Vec<ViewportResources>,
+    /// Dedicated resources for drawing viewport separators
+    separator_line_resources: ViewportResources,
+
+    global_uniform_bind_group_layout: wgpu::BindGroupLayout,
+
     depth_stencil_texture_view: wgpu::TextureView,
+    depth_stencil_texture_view_width: u32,
+    depth_stencil_texture_view_height: u32,
 }
 
 impl Renderer {
+    /// Internal helper to create a new set of viewport-specific GPU resources
+    fn create_viewport_resources(
+        device: &wgpu::Device,
+        uniform_bind_group_layout: &wgpu::BindGroupLayout,
+    ) -> ViewportResources {
+        let global_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Viewport Uniform Buffer"),
+            size: std::mem::size_of::<Uniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let global_uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Viewport Uniform Bind Group"),
+            layout: uniform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: global_uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        let sphere_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Sphere Buffer"),
+            size: 1024 * 1024,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let cylinder_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Cylinder Buffer"),
+            size: 1024 * 1024,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let surface_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Surface Vertex Buffer"),
+            size: 1024 * 1024,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let surface_index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Surface Index Buffer"),
+            size: 1024 * 1024,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let line_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Line Buffer"),
+            size: 1024 * 1024,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        ViewportResources {
+            global_uniform_buffer,
+            global_uniform_bind_group,
+            sphere_instance_buffer,
+            sphere_count: 0,
+            cylinder_instance_buffer,
+            cylinder_count: 0,
+            surface_vertex_buffer,
+            surface_index_buffer,
+            surface_indices_count: 0,
+            line_vertex_buffer,
+            line_vertex_count: 0,
+        }
+    }
+
     /// Creates a new `Renderer` with initialized GPU pipelines
     pub fn new(
         device: Arc<wgpu::Device>,
@@ -151,13 +236,6 @@ impl Renderer {
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../shader.wgsl").into()),
-        });
-
-        let global_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Uniform Buffer"),
-            size: std::mem::size_of::<Uniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
         });
 
         let global_uniform_bind_group_layout =
@@ -174,15 +252,6 @@ impl Renderer {
                     count: None,
                 }],
             });
-
-        let global_uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Uniform Bind Group"),
-            layout: &global_uniform_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: global_uniform_buffer.as_entire_binding(),
-            }],
-        });
 
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -428,42 +497,10 @@ impl Renderer {
             cache: None,
         });
 
-        let sphere_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Sphere Buffer"),
-            size: 1024 * 1024,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let cylinder_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Cylinder Buffer"),
-            size: 1024 * 1024,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let surface_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Surface Vertex Buffer"),
-            size: 4096 * 1024, // 4MB initial size
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let surface_index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Surface Index Buffer"),
-            size: 4096 * 1024, // 4MB initial size
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let line_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Line Buffer"),
-            size: 1024 * 1024,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
         let depth_stencil_texture_view = Self::create_depth_texture(&device, width, height);
+
+        let separator_line_resources =
+            Self::create_viewport_resources(&device, &global_uniform_bind_group_layout);
 
         Self {
             device,
@@ -472,18 +509,12 @@ impl Renderer {
             cylinder_render_pipeline,
             surface_render_pipeline,
             line_render_pipeline,
-            global_uniform_buffer,
-            global_uniform_bind_group,
-            sphere_instance_buffer,
-            sphere_count: 0,
-            cylinder_instance_buffer,
-            cylinder_count: 0,
-            surface_vertex_buffer,
-            surface_index_buffer,
-            surface_indices_count: 0,
-            line_vertex_buffer,
-            line_vertex_count: 0,
+            viewport_resources_collection: Vec::new(),
+            separator_line_resources,
+            global_uniform_bind_group_layout,
             depth_stencil_texture_view,
+            depth_stencil_texture_view_width: width,
+            depth_stencil_texture_view_height: height,
         }
     }
 
@@ -509,11 +540,15 @@ impl Renderer {
     /// Resizes the depth texture when the window is resized
     pub fn resize(&mut self, width: u32, height: u32) {
         self.depth_stencil_texture_view = Self::create_depth_texture(&self.device, width, height);
+        self.depth_stencil_texture_view_width = width;
+        self.depth_stencil_texture_view_height = height;
     }
 
-    /// Updates the GPU buffers with the latest protein instance data
-    pub fn update_instances(
-        &mut self,
+    /// Updates the GPU buffers for a specific viewport with the latest protein instance data
+    fn update_viewport_specific_instances(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        viewport_resource_handle: &mut ViewportResources,
         protein_data_store: &ProteinStore,
         currently_selected_atoms: &[(String, usize)],
         active_measurement_pairs: &[(usize, usize)],
@@ -533,10 +568,21 @@ impl Renderer {
             }
 
             // Update surface data if present and visible
-            if protein_locked_data.molecular_surface_mesh.is_surface_visible && !protein_locked_data.molecular_surface_mesh.is_mesh_empty() {
+            if protein_locked_data
+                .molecular_surface_mesh
+                .is_surface_visible
+                && !protein_locked_data.molecular_surface_mesh.is_mesh_empty()
+            {
                 let base_vertex_index = surface_vertices_collection.len() as u32;
-                surface_vertices_collection.extend_from_slice(&protein_locked_data.molecular_surface_mesh.surface_vertices_collection);
-                for &index_value in &protein_locked_data.molecular_surface_mesh.surface_indices_collection {
+                surface_vertices_collection.extend_from_slice(
+                    &protein_locked_data
+                        .molecular_surface_mesh
+                        .surface_vertices_collection,
+                );
+                for &index_value in &protein_locked_data
+                    .molecular_surface_mesh
+                    .surface_indices_collection
+                {
                     surface_indices_collection.push(index_value + base_vertex_index);
                 }
             }
@@ -567,21 +613,34 @@ impl Renderer {
                 }
             };
 
-            let get_secondary_structure_color = |secondary_structure_type: crate::protein::structure::SecondaryStructureType| -> [f32; 3] {
-                match secondary_structure_type {
-                    crate::protein::structure::SecondaryStructureType::Helix => [1.0, 0.4, 1.0], // Magenta/Pink for helix
-                    crate::protein::structure::SecondaryStructureType::Sheet => [1.0, 1.0, 0.2], // Yellow for sheet
-                    crate::protein::structure::SecondaryStructureType::Other => [0.6, 0.6, 0.6], // Gray for loop/other
-                }
-            };
+            let get_secondary_structure_color =
+                |secondary_structure_type: crate::protein::structure::SecondaryStructureType| -> [f32; 3] {
+                    match secondary_structure_type {
+                        crate::protein::structure::SecondaryStructureType::Helix => {
+                            [1.0, 0.4, 1.0]
+                        } // Magenta/Pink for helix
+                        crate::protein::structure::SecondaryStructureType::Sheet => {
+                            [1.0, 1.0, 0.2]
+                        } // Yellow for sheet
+                        crate::protein::structure::SecondaryStructureType::Other => {
+                            [0.6, 0.6, 0.6]
+                        } // Gray for loop/other
+                    }
+                };
 
             // Pre-calculate atom data
             let mut protein_atom_data_list = Vec::new();
-            for (atom_index, atom_hierarchy) in protein_locked_data.pdb.atoms_with_hierarchy().enumerate() {
+            for (atom_index, atom_hierarchy) in
+                protein_locked_data.pdb.atoms_with_hierarchy().enumerate()
+            {
                 let atom_reference = atom_hierarchy.atom();
                 let position_tuple = atom_reference.pos();
-                let world_position = glam::Vec3::new(position_tuple.0 as f32, position_tuple.1 as f32, position_tuple.2 as f32);
-                
+                let world_position = glam::Vec3::new(
+                    position_tuple.0 as f32,
+                    position_tuple.1 as f32,
+                    position_tuple.2 as f32,
+                );
+
                 atom_world_positions_lookup_table.insert(
                     (protein_identifier_name.clone(), atom_index),
                     world_position,
@@ -589,10 +648,16 @@ impl Renderer {
 
                 let chain_id = atom_hierarchy.chain().id();
                 let residue_number = atom_hierarchy.residue().serial_number();
-                
-                let secondary_structure_type = if protein_locked_data.pdb.is_residue_in_helix(chain_id, residue_number) {
+
+                let secondary_structure_type = if protein_locked_data
+                    .pdb
+                    .is_residue_in_helix(chain_id, residue_number)
+                {
                     crate::protein::structure::SecondaryStructureType::Helix
-                } else if protein_locked_data.pdb.is_residue_in_sheet(chain_id, residue_number) {
+                } else if protein_locked_data
+                    .pdb
+                    .is_residue_in_sheet(chain_id, residue_number)
+                {
                     crate::protein::structure::SecondaryStructureType::Sheet
                 } else {
                     crate::protein::structure::SecondaryStructureType::Other
@@ -600,22 +665,39 @@ impl Renderer {
 
                 let color = match active_color_scheme_mode {
                     ColorScheme::ByChain => get_color_for_chain_identifier(chain_id),
-                    ColorScheme::ByElement => _get_element_color(atom_reference.element().map(|e| e.symbol()).unwrap_or("?")),
-                    ColorScheme::ByBFactor => bfactor_to_color(atom_reference.b_factor() as f32, minimum_bfactor_value, maximum_bfactor_value),
-                    ColorScheme::BySecondary => get_secondary_structure_color(secondary_structure_type),
+                    ColorScheme::ByElement => _get_element_color(
+                        atom_reference.element().map(|e| e.symbol()).unwrap_or("?"),
+                    ),
+                    ColorScheme::ByBFactor => bfactor_to_color(
+                        atom_reference.b_factor() as f32,
+                        minimum_bfactor_value,
+                        maximum_bfactor_value,
+                    ),
+                    ColorScheme::BySecondary => {
+                        get_secondary_structure_color(secondary_structure_type)
+                    }
                     ColorScheme::Uniform(rgb) => rgb,
                 };
 
-                let is_selected = currently_selected_atoms.contains(&(protein_identifier_name.clone(), atom_index));
+                let is_selected = currently_selected_atoms
+                    .contains(&(protein_identifier_name.clone(), atom_index));
 
-                protein_atom_data_list.push((world_position, color, is_selected, atom_reference.name().to_string(), atom_reference.element().map(|e| e.symbol().to_string())));
+                protein_atom_data_list.push((
+                    world_position,
+                    color,
+                    is_selected,
+                    atom_reference.name().to_string(),
+                    atom_reference.element().map(|e| e.symbol().to_string()),
+                ));
             }
 
             // Generate spheres
             match active_representation_mode {
                 Representation::Spheres | Representation::BackboneAndSpheres => {
                     // Only Alpha Carbons (CA)
-                    for (atom_world_position, atom_color, is_atom_selected, atom_name, _) in &protein_atom_data_list {
+                    for (atom_world_position, atom_color, is_atom_selected, atom_name, _) in
+                        &protein_atom_data_list
+                    {
                         if atom_name == "CA" {
                             sphere_instances_collection.push(SphereInstance {
                                 position: atom_world_position.to_array(),
@@ -628,7 +710,9 @@ impl Renderer {
                 }
                 Representation::BallAndStick => {
                     // All atoms as small spheres
-                    for (atom_world_position, atom_color, is_atom_selected, _, _) in &protein_atom_data_list {
+                    for (atom_world_position, atom_color, is_atom_selected, _, _) in
+                        &protein_atom_data_list
+                    {
                         sphere_instances_collection.push(SphereInstance {
                             position: atom_world_position.to_array(),
                             radius: 0.4,
@@ -639,7 +723,9 @@ impl Renderer {
                 }
                 Representation::SpaceFilling => {
                     // All atoms as VdW spheres
-                    for (atom_world_position, atom_color, is_atom_selected, _, _) in &protein_atom_data_list {
+                    for (atom_world_position, atom_color, is_atom_selected, _, _) in
+                        &protein_atom_data_list
+                    {
                         sphere_instances_collection.push(SphereInstance {
                             position: atom_world_position.to_array(),
                             radius: 1.7, // Average VdW radius
@@ -655,14 +741,21 @@ impl Renderer {
             match active_representation_mode {
                 Representation::Sticks | Representation::BallAndStick => {
                     for current_atom_bond in &protein_locked_data.identified_atom_bonds {
-                        let (start_atom_position, start_atom_color, is_start_atom_selected, _, _) = protein_atom_data_list[current_atom_bond.first_atom_index];
-                        let (end_atom_position, end_atom_color, is_end_atom_selected, _, _) = protein_atom_data_list[current_atom_bond.second_atom_index];
-                        
-                        let cylinder_radius_value = if active_representation_mode == Representation::Sticks { 0.3 } else { 0.15 };
-                        
+                        let (start_atom_position, start_atom_color, is_start_atom_selected, _, _) =
+                            protein_atom_data_list[current_atom_bond.first_atom_index];
+                        let (end_atom_position, end_atom_color, is_end_atom_selected, _, _) =
+                            protein_atom_data_list[current_atom_bond.second_atom_index];
+
+                        let cylinder_radius_value =
+                            if active_representation_mode == Representation::Sticks {
+                                0.3
+                            } else {
+                                0.15
+                            };
+
                         // Create two cylinders meeting in the middle for per-atom coloring
                         let middle_position_vector = (start_atom_position + end_atom_position) * 0.5;
-                        
+
                         cylinder_instances_collection.push(CylinderInstance {
                             start_position: start_atom_position.to_array(),
                             end_position: middle_position_vector.to_array(),
@@ -681,11 +774,19 @@ impl Renderer {
                 }
                 Representation::Lines => {
                     for current_atom_bond in &protein_locked_data.identified_atom_bonds {
-                        let (start_atom_position, start_atom_color, _, _, _) = protein_atom_data_list[current_atom_bond.first_atom_index];
-                        let (end_atom_position, end_atom_color, _, _, _) = protein_atom_data_list[current_atom_bond.second_atom_index];
-                        
-                        line_vertices_collection.push(LineVertex { position: start_atom_position.to_array(), color: start_atom_color });
-                        line_vertices_collection.push(LineVertex { position: end_atom_position.to_array(), color: end_atom_color });
+                        let (start_atom_position, start_atom_color, _, _, _) =
+                            protein_atom_data_list[current_atom_bond.first_atom_index];
+                        let (end_atom_position, end_atom_color, _, _, _) =
+                            protein_atom_data_list[current_atom_bond.second_atom_index];
+
+                        line_vertices_collection.push(LineVertex {
+                            position: start_atom_position.to_array(),
+                            color: start_atom_color,
+                        });
+                        line_vertices_collection.push(LineVertex {
+                            position: end_atom_position.to_array(),
+                            color: end_atom_color,
+                        });
                     }
                 }
                 _ => {}
@@ -787,22 +888,22 @@ impl Renderer {
         }
 
         // Update GPU cylinder instance buffer
-        self.cylinder_count = cylinder_instances_collection.len() as u32;
+        viewport_resource_handle.cylinder_count = cylinder_instances_collection.len() as u32;
         if !cylinder_instances_collection.is_empty() {
             let serialized_cylinder_instance_data =
                 bytemuck::cast_slice(&cylinder_instances_collection);
-            if serialized_cylinder_instance_data.len() as u64 > self.cylinder_instance_buffer.size()
+            if serialized_cylinder_instance_data.len() as u64
+                > viewport_resource_handle.cylinder_instance_buffer.size()
             {
-                self.cylinder_instance_buffer =
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("Cylinder Instance Buffer"),
-                            contents: serialized_cylinder_instance_data,
-                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                        });
+                viewport_resource_handle.cylinder_instance_buffer =
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Cylinder Instance Buffer"),
+                        contents: serialized_cylinder_instance_data,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    });
             } else {
-                self.queue.write_buffer(
-                    &self.cylinder_instance_buffer,
+                queue.write_buffer(
+                    &viewport_resource_handle.cylinder_instance_buffer,
                     0,
                     serialized_cylinder_instance_data,
                 );
@@ -810,47 +911,62 @@ impl Renderer {
         }
 
         // Update GPU surface buffers
-        self.surface_indices_count = surface_indices_collection.len() as u32;
+        viewport_resource_handle.surface_indices_count = surface_indices_collection.len() as u32;
         if !surface_vertices_collection.is_empty() {
             let serialized_surface_vertex_data = bytemuck::cast_slice(&surface_vertices_collection);
-            if serialized_surface_vertex_data.len() as u64 > self.surface_vertex_buffer.size() {
-                self.surface_vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Surface Vertex Buffer"),
-                    contents: serialized_surface_vertex_data,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                });
+            if serialized_surface_vertex_data.len() as u64
+                > viewport_resource_handle.surface_vertex_buffer.size()
+            {
+                viewport_resource_handle.surface_vertex_buffer =
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Surface Vertex Buffer"),
+                        contents: serialized_surface_vertex_data,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    });
             } else {
-                self.queue.write_buffer(&self.surface_vertex_buffer, 0, serialized_surface_vertex_data);
+                queue.write_buffer(
+                    &viewport_resource_handle.surface_vertex_buffer,
+                    0,
+                    serialized_surface_vertex_data,
+                );
             }
 
             let serialized_surface_index_data = bytemuck::cast_slice(&surface_indices_collection);
-            if serialized_surface_index_data.len() as u64 > self.surface_index_buffer.size() {
-                self.surface_index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Surface Index Buffer"),
-                    contents: serialized_surface_index_data,
-                    usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-                });
+            if serialized_surface_index_data.len() as u64
+                > viewport_resource_handle.surface_index_buffer.size()
+            {
+                viewport_resource_handle.surface_index_buffer =
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Surface Index Buffer"),
+                        contents: serialized_surface_index_data,
+                        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                    });
             } else {
-                self.queue.write_buffer(&self.surface_index_buffer, 0, serialized_surface_index_data);
+                queue.write_buffer(
+                    &viewport_resource_handle.surface_index_buffer,
+                    0,
+                    serialized_surface_index_data,
+                );
             }
         }
 
         // Update GPU sphere instance buffer
-        self.sphere_count = sphere_instances_collection.len() as u32;
+        viewport_resource_handle.sphere_count = sphere_instances_collection.len() as u32;
         if !sphere_instances_collection.is_empty() {
             let serialized_sphere_instance_data =
                 bytemuck::cast_slice(&sphere_instances_collection);
-            if serialized_sphere_instance_data.len() as u64 > self.sphere_instance_buffer.size() {
-                self.sphere_instance_buffer =
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("Sphere Instance Buffer"),
-                            contents: serialized_sphere_instance_data,
-                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                        });
+            if serialized_sphere_instance_data.len() as u64
+                > viewport_resource_handle.sphere_instance_buffer.size()
+            {
+                viewport_resource_handle.sphere_instance_buffer =
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Sphere Instance Buffer"),
+                        contents: serialized_sphere_instance_data,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    });
             } else {
-                self.queue.write_buffer(
-                    &self.sphere_instance_buffer,
+                queue.write_buffer(
+                    &viewport_resource_handle.sphere_instance_buffer,
                     0,
                     serialized_sphere_instance_data,
                 );
@@ -858,22 +974,237 @@ impl Renderer {
         }
 
         // Update GPU line vertex buffer
-        self.line_vertex_count = line_vertices_collection.len() as u32;
+        viewport_resource_handle.line_vertex_count = line_vertices_collection.len() as u32;
         if !line_vertices_collection.is_empty() {
             let serialized_line_vertex_data = bytemuck::cast_slice(&line_vertices_collection);
-            if serialized_line_vertex_data.len() as u64 > self.line_vertex_buffer.size() {
-                self.line_vertex_buffer =
-                    self.device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("Line Vertex Buffer"),
-                            contents: serialized_line_vertex_data,
-                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                        });
+            if serialized_line_vertex_data.len() as u64
+                > viewport_resource_handle.line_vertex_buffer.size()
+            {
+                viewport_resource_handle.line_vertex_buffer =
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("Line Vertex Buffer"),
+                        contents: serialized_line_vertex_data,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    });
             } else {
-                self.queue
-                    .write_buffer(&self.line_vertex_buffer, 0, serialized_line_vertex_data);
+                queue.write_buffer(
+                    &viewport_resource_handle.line_vertex_buffer,
+                    0,
+                    serialized_line_vertex_data,
+                );
             }
         }
+    }
+
+    /// Encodes and returns a command buffer for rendering multiple viewports
+    pub fn render_viewports(
+        &mut self,
+        target_texture_view: &wgpu::TextureView,
+        viewport_data_collection: &[(
+            Arc<RwLock<ProteinStore>>,
+            Arc<RwLock<Camera>>,
+            &[(String, usize)],
+            &[(usize, usize)],
+            [f32; 4],
+        )],
+    ) -> wgpu::CommandBuffer {
+        // Ensure we have enough viewport resources
+        while self.viewport_resources_collection.len() < viewport_data_collection.len() {
+            self.viewport_resources_collection.push(Self::create_viewport_resources(
+                &self.device,
+                &self.global_uniform_bind_group_layout,
+            ));
+        }
+
+        // First, update all buffers for all viewports
+        for (viewport_index, (store, _, selected, measurements, _)) in
+            viewport_data_collection.iter().enumerate()
+        {
+            let resource_handle = &mut self.viewport_resources_collection[viewport_index];
+            Self::update_viewport_specific_instances(
+                &self.device,
+                &self.queue,
+                resource_handle,
+                &store.read().unwrap(),
+                selected,
+                measurements,
+            );
+        }
+
+        let mut graphics_command_encoder =
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Main Render Command Encoder"),
+                });
+
+        {
+            let mut active_render_pass =
+                graphics_command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Protein Visualization Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target_texture_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.05,
+                                g: 0.05,
+                                b: 0.07,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.depth_stencil_texture_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+
+            for (
+                viewport_index,
+                (
+                    _,
+                    camera_handle,
+                    _,
+                    _,
+                    viewport_rectangle_coordinates,
+                ),
+            ) in viewport_data_collection.iter().enumerate()
+            {
+                let resource_handle = &self.viewport_resources_collection[viewport_index];
+
+                // Set viewport for this region
+                active_render_pass.set_viewport(
+                    viewport_rectangle_coordinates[0],
+                    viewport_rectangle_coordinates[1],
+                    viewport_rectangle_coordinates[2],
+                    viewport_rectangle_coordinates[3],
+                    0.0,
+                    1.0,
+                );
+
+                // Update uniforms for this viewport's camera
+                let locked_camera_instance = camera_handle.read().unwrap();
+                let global_uniform_values_structure = Uniforms {
+                    view_projection_matrix: locked_camera_instance
+                        .view_projection_matrix()
+                        .to_cols_array_2d(),
+                    camera_world_position: locked_camera_instance.position().to_array(),
+                    _padding: 0.0,
+                };
+                self.queue.write_buffer(
+                    &resource_handle.global_uniform_buffer,
+                    0,
+                    bytemuck::bytes_of(&global_uniform_values_structure),
+                );
+
+                // Draw backbone trace lines
+                if resource_handle.line_vertex_count > 0 {
+                    active_render_pass.set_pipeline(&self.line_render_pipeline);
+                    active_render_pass.set_bind_group(0, &resource_handle.global_uniform_bind_group, &[]);
+                    active_render_pass.set_vertex_buffer(0, resource_handle.line_vertex_buffer.slice(..));
+                    active_render_pass.draw(0..resource_handle.line_vertex_count, 0..1);
+                }
+
+                // Draw atom spheres
+                if resource_handle.sphere_count > 0 {
+                    active_render_pass.set_pipeline(&self.sphere_render_pipeline);
+                    active_render_pass.set_bind_group(0, &resource_handle.global_uniform_bind_group, &[]);
+                    active_render_pass.set_vertex_buffer(0, resource_handle.sphere_instance_buffer.slice(..));
+                    active_render_pass.draw(0..4, 0..resource_handle.sphere_count);
+                }
+
+                // Draw cylinders (sticks/bonds)
+                if resource_handle.cylinder_count > 0 {
+                    active_render_pass.set_pipeline(&self.cylinder_render_pipeline);
+                    active_render_pass.set_bind_group(0, &resource_handle.global_uniform_bind_group, &[]);
+                    active_render_pass.set_vertex_buffer(0, resource_handle.cylinder_instance_buffer.slice(..));
+                    active_render_pass.draw(0..4, 0..resource_handle.cylinder_count);
+                }
+
+                // Draw molecular surfaces
+                if resource_handle.surface_indices_count > 0 {
+                    active_render_pass.set_pipeline(&self.surface_render_pipeline);
+                    active_render_pass.set_bind_group(0, &resource_handle.global_uniform_bind_group, &[]);
+                    active_render_pass.set_vertex_buffer(0, resource_handle.surface_vertex_buffer.slice(..));
+                    active_render_pass.set_index_buffer(
+                        resource_handle.surface_index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint32,
+                    );
+                    active_render_pass.draw_indexed(0..resource_handle.surface_indices_count, 0, 0..1);
+                }
+            }
+
+            // Draw separation lines between viewports
+            let total_viewport_count = viewport_data_collection.len();
+            if total_viewport_count > 1 {
+                // Reset viewport to full window for drawing separators
+                active_render_pass.set_viewport(
+                    0.0,
+                    0.0,
+                    self.depth_stencil_texture_view_width as f32,
+                    self.depth_stencil_texture_view_height as f32,
+                    0.0,
+                    1.0,
+                );
+
+                let mut separator_line_vertices_collection = Vec::new();
+                for viewport_index in 1..total_viewport_count {
+                    let horizontal_normalized_coordinate =
+                        (viewport_index as f32 / total_viewport_count as f32) * 2.0 - 1.0;
+
+                    // Vertical line in Normalized Device Coordinates (NDC)
+                    separator_line_vertices_collection.push(LineVertex {
+                        position: [horizontal_normalized_coordinate, -1.0, 0.0],
+                        color: [0.5, 0.5, 0.5], // Gray separator
+                    });
+                    separator_line_vertices_collection.push(LineVertex {
+                        position: [horizontal_normalized_coordinate, 1.0, 0.0],
+                        color: [0.5, 0.5, 0.5],
+                    });
+                }
+
+                // Update uniform buffer with identity matrix to draw directly in NDC
+                let identity_matrix_array = [
+                    [1.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ];
+                let identity_uniform_values_structure = Uniforms {
+                    view_projection_matrix: identity_matrix_array,
+                    camera_world_position: [0.0, 0.0, 0.0],
+                    _padding: 0.0,
+                };
+                self.queue.write_buffer(
+                    &self.separator_line_resources.global_uniform_buffer,
+                    0,
+                    bytemuck::bytes_of(&identity_uniform_values_structure),
+                );
+
+                // Use the temporary buffer to store separator vertices
+                let serialized_separator_vertex_data =
+                    bytemuck::cast_slice(&separator_line_vertices_collection);
+                self.queue.write_buffer(
+                    &self.separator_line_resources.line_vertex_buffer,
+                    0,
+                    serialized_separator_vertex_data,
+                );
+
+                active_render_pass.set_pipeline(&self.line_render_pipeline);
+                active_render_pass.set_bind_group(0, &self.separator_line_resources.global_uniform_bind_group, &[]);
+                active_render_pass.set_vertex_buffer(0, self.separator_line_resources.line_vertex_buffer.slice(..));
+                active_render_pass.draw(0..(separator_line_vertices_collection.len() as u32), 0..1);
+            }
+        }
+
+        graphics_command_encoder.finish()
     }
 
     /// Encodes and returns a command buffer for rendering the current frame
@@ -882,6 +1213,17 @@ impl Renderer {
         target_texture_view: &wgpu::TextureView,
         camera_object_handle: &Camera,
     ) -> wgpu::CommandBuffer {
+        // Fallback for non-viewport rendering: use the first viewport's resources if available, 
+        // or ensure at least one set of resources exists.
+        if self.viewport_resources_collection.is_empty() {
+            self.viewport_resources_collection.push(Self::create_viewport_resources(
+                &self.device,
+                &self.global_uniform_bind_group_layout,
+            ));
+        }
+        
+        let resource_handle = &self.viewport_resources_collection[0];
+
         let global_uniform_values_structure = Uniforms {
             view_projection_matrix: camera_object_handle
                 .view_projection_matrix()
@@ -890,7 +1232,7 @@ impl Renderer {
             _padding: 0.0,
         };
         self.queue.write_buffer(
-            &self.global_uniform_buffer,
+            &resource_handle.global_uniform_buffer,
             0,
             bytemuck::bytes_of(&global_uniform_values_structure),
         );
@@ -931,36 +1273,36 @@ impl Renderer {
                 });
 
             // Draw backbone trace lines first
-            if self.line_vertex_count > 0 {
+            if resource_handle.line_vertex_count > 0 {
                 active_render_pass.set_pipeline(&self.line_render_pipeline);
-                active_render_pass.set_bind_group(0, &self.global_uniform_bind_group, &[]);
-                active_render_pass.set_vertex_buffer(0, self.line_vertex_buffer.slice(..));
-                active_render_pass.draw(0..self.line_vertex_count, 0..1);
+                active_render_pass.set_bind_group(0, &resource_handle.global_uniform_bind_group, &[]);
+                active_render_pass.set_vertex_buffer(0, resource_handle.line_vertex_buffer.slice(..));
+                active_render_pass.draw(0..resource_handle.line_vertex_count, 0..1);
             }
 
             // Draw atom spheres
-            if self.sphere_count > 0 {
+            if resource_handle.sphere_count > 0 {
                 active_render_pass.set_pipeline(&self.sphere_render_pipeline);
-                active_render_pass.set_bind_group(0, &self.global_uniform_bind_group, &[]);
-                active_render_pass.set_vertex_buffer(0, self.sphere_instance_buffer.slice(..));
-                active_render_pass.draw(0..4, 0..self.sphere_count);
+                active_render_pass.set_bind_group(0, &resource_handle.global_uniform_bind_group, &[]);
+                active_render_pass.set_vertex_buffer(0, resource_handle.sphere_instance_buffer.slice(..));
+                active_render_pass.draw(0..4, 0..resource_handle.sphere_count);
             }
 
             // Draw cylinders (sticks/bonds)
-            if self.cylinder_count > 0 {
+            if resource_handle.cylinder_count > 0 {
                 active_render_pass.set_pipeline(&self.cylinder_render_pipeline);
-                active_render_pass.set_bind_group(0, &self.global_uniform_bind_group, &[]);
-                active_render_pass.set_vertex_buffer(0, self.cylinder_instance_buffer.slice(..));
-                active_render_pass.draw(0..4, 0..self.cylinder_count);
+                active_render_pass.set_bind_group(0, &resource_handle.global_uniform_bind_group, &[]);
+                active_render_pass.set_vertex_buffer(0, resource_handle.cylinder_instance_buffer.slice(..));
+                active_render_pass.draw(0..4, 0..resource_handle.cylinder_count);
             }
 
             // Draw molecular surfaces
-            if self.surface_indices_count > 0 {
+            if resource_handle.surface_indices_count > 0 {
                 active_render_pass.set_pipeline(&self.surface_render_pipeline);
-                active_render_pass.set_bind_group(0, &self.global_uniform_bind_group, &[]);
-                active_render_pass.set_vertex_buffer(0, self.surface_vertex_buffer.slice(..));
-                active_render_pass.set_index_buffer(self.surface_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                active_render_pass.draw_indexed(0..self.surface_indices_count, 0, 0..1);
+                active_render_pass.set_bind_group(0, &resource_handle.global_uniform_bind_group, &[]);
+                active_render_pass.set_vertex_buffer(0, resource_handle.surface_vertex_buffer.slice(..));
+                active_render_pass.set_index_buffer(resource_handle.surface_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                active_render_pass.draw_indexed(0..resource_handle.surface_indices_count, 0, 0..1);
             }
         }
 

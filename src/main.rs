@@ -13,14 +13,13 @@ mod surface;
 use clap::Parser;
 use notify::Watcher;
 use pdbtbx::ContainsAtomConformer;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{WindowBuilder, WindowId},
+    window::WindowBuilder,
 };
 
 use lua_api::{ScriptEngine, ScriptEvent};
@@ -36,22 +35,42 @@ struct Args {
     script: Option<String>,
 }
 
+/// State for a single rendering viewport
+struct ViewportState {
+    camera: Arc<RwLock<Camera>>,
+    store: Arc<RwLock<ProteinStore>>,
+    /// Selected atoms: (protein_name, atom_index_in_pdb_hierarchy)
+    selected_atoms: Vec<(String, usize)>,
+    /// Measurement pairs: (atom1, atom2) where atomX is index in selected_atoms
+    measurements: Vec<(usize, usize)>,
+    /// Whether the distance for the current selection has already been printed
+    distance_has_been_printed_for_current_selection: bool,
+}
+
+impl ViewportState {
+    fn new(store: Arc<RwLock<ProteinStore>>, camera: Arc<RwLock<Camera>>) -> Self {
+        Self {
+            store,
+            camera,
+            selected_atoms: Vec::new(),
+            measurements: Vec::new(),
+            distance_has_been_printed_for_current_selection: false,
+        }
+    }
+}
+
 /// State associated with a single window
 struct WindowState {
     window: Arc<winit::window::Window>,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     renderer: Renderer,
-    camera: Arc<RwLock<Camera>>,
-    store: Arc<RwLock<ProteinStore>>,
+    
+    /// Multiple viewports displayed in this window
+    viewports: Vec<ViewportState>,
 
-    /// Selected atoms: (protein_name, atom_index_in_pdb_hierarchy)
-    selected_atoms: Vec<(String, usize)>,
-    /// Measurement pairs: (atom1, atom2) where atomX is index in selected_atoms
-    measurements: Vec<(usize, usize)>,
-
-    /// Whether the distance for the current selection has already been printed to the console
-    distance_has_been_printed_for_current_selection: bool,
+    /// The index of the viewport currently being interacted with (captured during drag)
+    captured_viewport_index: Option<usize>,
 
     /// Whether the left mouse button is currently pressed
     mouse_pressed: bool,
@@ -68,8 +87,6 @@ impl WindowState {
         adapter: &wgpu::Adapter,
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
-        store: Arc<RwLock<ProteinStore>>,
-        camera: Arc<RwLock<Camera>>,
     ) -> Self {
         let window_inner_size = window.inner_size();
         let surface = instance.create_surface(window.clone()).unwrap();
@@ -102,25 +119,39 @@ impl WindowState {
             window_inner_size.height,
         );
 
-        // Ensure camera aspect ratio is correct for the window size
-        camera
-            .write()
-            .unwrap()
-            .set_aspect(window_inner_size.width as f32 / window_inner_size.height as f32);
-
         Self {
             window,
             surface,
             config,
             renderer,
-            camera,
-            store,
-            selected_atoms: Vec::new(),
-            measurements: Vec::new(),
-            distance_has_been_printed_for_current_selection: false,
+            viewports: Vec::new(),
+            captured_viewport_index: None,
             mouse_pressed: false,
             right_mouse_button_is_pressed: false,
             last_recorded_mouse_cursor_position: None,
+        }
+    }
+
+    fn add_viewport(&mut self, store: Arc<RwLock<ProteinStore>>, camera: Arc<RwLock<Camera>>) {
+        self.viewports.push(ViewportState::new(store, camera));
+        self.recalculate_viewport_aspect_ratios();
+    }
+
+    fn recalculate_viewport_aspect_ratios(&mut self) {
+        if self.viewports.is_empty() {
+            return;
+        }
+
+        let viewport_count = self.viewports.len() as f32;
+        let window_width = self.config.width as f32;
+        let window_height = self.config.height as f32;
+        
+        // Horizontal split: each viewport gets equal width
+        let viewport_width = window_width / viewport_count;
+        let aspect_ratio = viewport_width / window_height;
+
+        for viewport in &self.viewports {
+            viewport.camera.write().unwrap().set_aspect(aspect_ratio);
         }
     }
 
@@ -135,233 +166,16 @@ impl WindowState {
             self.surface.configure(device, &self.config);
             self.renderer
                 .resize(physical_window_size.width, physical_window_size.height);
-            self.camera
-                .write()
-                .unwrap()
-                .set_aspect(physical_window_size.width as f32 / physical_window_size.height as f32);
+            self.recalculate_viewport_aspect_ratios();
         }
     }
 
     fn update(&mut self) {
-        // Update renderer with current protein data
-        {
-            let locked_protein_store = self.store.read().unwrap();
-            self.renderer.update_instances(
-                &locked_protein_store,
-                &self.selected_atoms,
-                &self.measurements,
-            );
-        }
-
-        // Auto-focus camera on first protein if we haven't moved it
-        let mut camera = self.camera.write().unwrap();
-        if camera.target == glam::Vec3::ZERO {
-            let locked_protein_store = self.store.read().unwrap();
-            let optional_first_protein_entry = locked_protein_store.iter().next().cloned();
-            drop(locked_protein_store);
-
-            if let Some(protein_shared_reference) = optional_first_protein_entry {
-                let protein_locked_data = protein_shared_reference.read().unwrap();
-                let protein_center_of_mass = protein_locked_data.center_of_mass();
-                let (bounding_box_minimum, bounding_box_maximum) =
-                    protein_locked_data.bounding_box();
-                let bounding_sphere_radius =
-                    (bounding_box_maximum - bounding_box_minimum).length() / 2.0;
-                drop(protein_locked_data);
-                camera.focus_on(protein_center_of_mass, bounding_sphere_radius);
-            }
-        }
-    }
-
-    fn render(&mut self, queue: &wgpu::Queue) -> Result<(), wgpu::SurfaceError> {
-        let surface_texture_output = self.surface.get_current_texture()?;
-        let texture_view_for_rendering = surface_texture_output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let locked_camera_handle = self.camera.read().unwrap();
-        let rendered_graphics_command_buffer = self
-            .renderer
-            .render(&texture_view_for_rendering, &locked_camera_handle);
-        queue.submit(std::iter::once(rendered_graphics_command_buffer));
-        surface_texture_output.present();
-
-        Ok(())
-    }
-
-    fn handle_mouse_input(
-        &mut self,
-        element_press_state: ElementState,
-        mouse_button_identifier: MouseButton,
-    ) {
-        match mouse_button_identifier {
-            MouseButton::Left => {
-                let was_previously_pressed = self.mouse_pressed;
-                self.mouse_pressed = element_press_state == ElementState::Pressed;
-
-                // Only perform ray casting on the initial press (click)
-                if self.mouse_pressed && !was_previously_pressed {
-                    if let Some((current_mouse_x_coordinate, current_mouse_y_coordinate)) =
-                        self.last_recorded_mouse_cursor_position
-                    {
-                        let (ray_origin_point, ray_direction_unit_vector) = self
-                            .camera
-                            .read()
-                            .unwrap()
-                            .calculate_ray_from_screen_coordinates(
-                                glam::Vec2::new(
-                                    current_mouse_x_coordinate as f32,
-                                    current_mouse_y_coordinate as f32,
-                                ),
-                                glam::Vec2::new(
-                                    self.config.width as f32,
-                                    self.config.height as f32,
-                                ),
-                            );
-
-                        let mut closest_intersection_hit_data: Option<(String, usize, f32)> = None;
-
-                        let locked_protein_store = self.store.read().unwrap();
-                        for protein_shared_handle in locked_protein_store.iter() {
-                            let protein_locked_data = protein_shared_handle.read().unwrap();
-                            let protein_identifier_name = protein_locked_data.name.clone();
-
-                            let current_representation_mode = protein_locked_data.representation;
-
-                            let base_sphere_hitbox_radius = match current_representation_mode {
-                                Representation::Spheres | Representation::BackboneAndSpheres => 1.5,
-                                Representation::BallAndStick => 0.4,
-                                Representation::SpaceFilling => 1.7,
-                                _ => 1.0,
-                            };
-
-                            for (atom_global_index, current_atom_hierarchy) in protein_locked_data
-                                .pdb
-                                .atoms_with_hierarchy()
-                                .into_iter()
-                                .enumerate()
-                            {
-                                let current_atom_reference = current_atom_hierarchy.atom();
-
-                                if matches!(
-                                    current_representation_mode,
-                                    Representation::Spheres | Representation::BackboneAndSpheres
-                                ) && current_atom_reference.name() != "CA"
-                                {
-                                    continue;
-                                }
-
-                                let atom_position_tuple = current_atom_reference.pos();
-                                let atom_world_position_vector = glam::Vec3::new(
-                                    atom_position_tuple.0 as f32,
-                                    atom_position_tuple.1 as f32,
-                                    atom_position_tuple.2 as f32,
-                                );
-
-                                let vector_from_ray_origin_to_atom_center =
-                                    ray_origin_point - atom_world_position_vector;
-
-                                let quadratic_coefficient_b = vector_from_ray_origin_to_atom_center
-                                    .dot(ray_direction_unit_vector);
-                                let quadratic_coefficient_c = vector_from_ray_origin_to_atom_center
-                                    .dot(vector_from_ray_origin_to_atom_center)
-                                    - base_sphere_hitbox_radius * base_sphere_hitbox_radius;
-
-                                let intersection_discriminant_value = quadratic_coefficient_b
-                                    * quadratic_coefficient_b
-                                    - quadratic_coefficient_c;
-
-                                if intersection_discriminant_value >= 0.0 {
-                                    let distance_to_intersection_point = -quadratic_coefficient_b
-                                        - intersection_discriminant_value.sqrt();
-                                    if distance_to_intersection_point > 0.0 {
-                                        if closest_intersection_hit_data.is_none()
-                                            || distance_to_intersection_point
-                                                < closest_intersection_hit_data.as_ref().unwrap().2
-                                        {
-                                            closest_intersection_hit_data = Some((
-                                                protein_identifier_name.clone(),
-                                                atom_global_index,
-                                                distance_to_intersection_point,
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if let Some((hit_protein_name, hit_atom_index, _)) =
-                            closest_intersection_hit_data
-                        {
-                            let target_atom_selection_identifier =
-                                (hit_protein_name, hit_atom_index);
-
-                            if self
-                                .selected_atoms
-                                .contains(&target_atom_selection_identifier)
-                            {
-                                // Toggle selection off if already selected
-                                self.selected_atoms
-                                    .retain(|item| item != &target_atom_selection_identifier);
-                                self.distance_has_been_printed_for_current_selection = false;
-                            } else {
-                                // If we already have 2 atoms selected, start a fresh selection
-                                if self.selected_atoms.len() >= 2 {
-                                    self.selected_atoms.clear();
-                                    self.measurements.clear();
-                                }
-                                self.selected_atoms.push(target_atom_selection_identifier);
-                                self.distance_has_been_printed_for_current_selection = false;
-                            }
-                        }
-                    }
-                }
-            }
-            MouseButton::Right => {
-                self.right_mouse_button_is_pressed = element_press_state == ElementState::Pressed;
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_mouse_move(&mut self, cursor_screen_position: (f64, f64)) {
-        if let Some((previous_mouse_x, previous_mouse_y)) = self.last_recorded_mouse_cursor_position
-        {
-            let mouse_movement_delta_x = (cursor_screen_position.0 - previous_mouse_x) as f32;
-            let mouse_movement_delta_y = (cursor_screen_position.1 - previous_mouse_y) as f32;
-
-            if self.mouse_pressed {
-                self.camera.write().unwrap().rotate(
-                    -mouse_movement_delta_x * 0.01,
-                    mouse_movement_delta_y * 0.01,
-                );
-            } else if self.right_mouse_button_is_pressed {
-                self.camera
-                    .write()
-                    .unwrap()
-                    .translate_camera_target_position(
-                        mouse_movement_delta_x,
-                        mouse_movement_delta_y,
-                    );
-            }
-        }
-        self.last_recorded_mouse_cursor_position = Some(cursor_screen_position);
-    }
-
-    fn handle_scroll(&mut self, scroll_delta_value: f32) {
-        self.camera.write().unwrap().zoom(scroll_delta_value);
-    }
-
-    fn handle_key(&mut self, pressed_physical_keycode: KeyCode) {
-        match pressed_physical_keycode {
-            // Camera and Selection Control
-            KeyCode::KeyR => {
-                self.selected_atoms.clear();
-                self.measurements.clear();
-                self.distance_has_been_printed_for_current_selection = false;
-                let mut camera = self.camera.write().unwrap();
-                *camera = Camera::new(self.config.width as f32 / self.config.height as f32);
-                let locked_protein_store = self.store.read().unwrap();
+        // Auto-focus logic for each viewport if needed
+        for viewport in &self.viewports {
+            let mut camera = viewport.camera.write().unwrap();
+            if camera.target == glam::Vec3::ZERO {
+                let locked_protein_store = viewport.store.read().unwrap();
                 let optional_first_protein_entry = locked_protein_store.iter().next().cloned();
                 drop(locked_protein_store);
 
@@ -376,119 +190,387 @@ impl WindowState {
                     camera.focus_on(protein_center_of_mass, bounding_sphere_radius);
                 }
             }
+        }
+    }
 
-            // Representation Modes (Explicitly assigned keys only)
-            KeyCode::Digit1 => self.set_all_representation(Representation::Spheres),
-            KeyCode::Digit2 => self.set_all_representation(Representation::Backbone),
-            KeyCode::Digit3 => self.set_all_representation(Representation::BackboneAndSpheres),
-            KeyCode::Digit4 => self.set_all_representation(Representation::Sticks),
-            KeyCode::Digit5 => self.set_all_representation(Representation::BallAndStick),
-            KeyCode::Digit6 => self.set_all_representation(Representation::SpaceFilling),
-            KeyCode::Digit7 => self.set_all_representation(Representation::Lines),
+    fn render(&mut self, queue: &wgpu::Queue) -> Result<(), wgpu::SurfaceError> {
+        let surface_texture_output = self.surface.get_current_texture()?;
+        let texture_view_for_rendering = surface_texture_output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
-            // Color Schemes
-            KeyCode::KeyC => self.set_all_color_scheme(ColorScheme::ByChain),
-            KeyCode::KeyB => self.set_all_color_scheme(ColorScheme::ByBFactor),
-            KeyCode::KeyE => self.set_all_color_scheme(ColorScheme::ByElement),
-            KeyCode::KeyS => self.set_all_color_scheme(ColorScheme::BySecondary),
+        // Prepare data for all viewports
+        let mut viewport_render_data = Vec::new();
+        let viewport_count = self.viewports.len();
+        
+        for (index, viewport) in self.viewports.iter().enumerate() {
+            let x_offset = (index as f32 / viewport_count as f32) * self.config.width as f32;
+            let viewport_width = self.config.width as f32 / viewport_count as f32;
+            
+            viewport_render_data.push((
+                viewport.store.clone(),
+                viewport.camera.clone(),
+                &viewport.selected_atoms[..],
+                &viewport.measurements[..],
+                [x_offset, 0.0, viewport_width, self.config.height as f32],
+            ));
+        }
 
-            // Analysis and Surface
-            KeyCode::KeyM => {
-                if self.selected_atoms.len() == 2
-                    && !self.distance_has_been_printed_for_current_selection
-                {
-                    // Calculate and print distance
-                    let locked_protein_store = self.store.read().unwrap();
-                    let mut global_atom_positions_lookup_table = std::collections::HashMap::new();
-                    for protein_shared_handle in locked_protein_store.iter() {
-                        let protein_locked_data = protein_shared_handle.read().unwrap();
-                        for (atom_indexing_counter, current_atom_hierarchy) in protein_locked_data
-                            .pdb
-                            .atoms_with_hierarchy()
-                            .into_iter()
-                            .enumerate()
-                        {
-                            let atom_position_tuple = current_atom_hierarchy.atom().pos();
-                            global_atom_positions_lookup_table.insert(
-                                (protein_locked_data.name.clone(), atom_indexing_counter),
-                                glam::Vec3::new(
-                                    atom_position_tuple.0 as f32,
-                                    atom_position_tuple.1 as f32,
-                                    atom_position_tuple.2 as f32,
-                                ),
-                            );
-                        }
-                    }
+        let rendered_graphics_command_buffer = self
+            .renderer
+            .render_viewports(&texture_view_for_rendering, &viewport_render_data);
+        
+        queue.submit(std::iter::once(rendered_graphics_command_buffer));
+        surface_texture_output.present();
 
-                    if let (
-                        Some(first_atom_selection_identifier),
-                        Some(second_atom_selection_identifier),
-                    ) = (self.selected_atoms.get(0), self.selected_atoms.get(1))
+        Ok(())
+    }
+
+    fn get_viewport_at_mouse(&self, x: f64) -> Option<(usize, f32, f32)> {
+        if self.viewports.is_empty() { return None; }
+        
+        let viewport_count = self.viewports.len();
+        let viewport_width = self.config.width as f64 / viewport_count as f64;
+        let viewport_index = (x / viewport_width).floor() as usize;
+        
+        if viewport_index < viewport_count {
+            let local_x = x - (viewport_index as f64 * viewport_width);
+            Some((viewport_index, local_x as f32, viewport_width as f32))
+        } else {
+            None
+        }
+    }
+
+    fn handle_mouse_input(
+        &mut self,
+        element_press_state: ElementState,
+        mouse_button_identifier: MouseButton,
+    ) {
+        match mouse_button_identifier {
+            MouseButton::Left => {
+                let was_previously_pressed = self.mouse_pressed;
+                self.mouse_pressed = element_press_state == ElementState::Pressed;
+
+                if self.mouse_pressed && !was_previously_pressed {
+                    if let Some((current_mouse_x_coordinate, current_mouse_y_coordinate)) =
+                        self.last_recorded_mouse_cursor_position
                     {
-                        if let (Some(first_atom_world_position), Some(second_atom_world_position)) = (
-                            global_atom_positions_lookup_table.get(first_atom_selection_identifier),
-                            global_atom_positions_lookup_table
-                                .get(second_atom_selection_identifier),
-                        ) {
-                            let calculated_distance_value =
-                                first_atom_world_position.distance(*second_atom_world_position);
-                            info!(
-                                "Calculated distance: {:.2} Angstroms",
-                                calculated_distance_value
-                            );
+                        if let Some((viewport_index, local_x_coordinate, viewport_width)) = self.get_viewport_at_mouse(current_mouse_x_coordinate) {
+                            // Capture the viewport where the interaction started
+                            self.captured_viewport_index = Some(viewport_index);
+                            
+                            let target_viewport = &mut self.viewports[viewport_index];
+                            let (ray_origin_point, ray_direction_unit_vector) = target_viewport
+                                .camera
+                                .read()
+                                .unwrap()
+                                .calculate_ray_from_screen_coordinates(
+                                    glam::Vec2::new(
+                                        local_x_coordinate,
+                                        current_mouse_y_coordinate as f32,
+                                    ),
+                                    glam::Vec2::new(
+                                        viewport_width,
+                                        self.config.height as f32,
+                                    ),
+                                );
 
-                            // Clear previous visual measurement lines and show only the new one
-                            self.measurements.clear();
-                            self.measurements.push((0, 1));
+                            let mut closest_intersection_hit_data: Option<(String, usize, f32)> = None;
 
-                            self.distance_has_been_printed_for_current_selection = true;
+                            let locked_protein_store = target_viewport.store.read().unwrap();
+                            for protein_shared_handle in locked_protein_store.iter() {
+                                let protein_locked_data = protein_shared_handle.read().unwrap();
+                                let protein_identifier_name = protein_locked_data.name.clone();
+
+                                let current_representation_mode = protein_locked_data.representation;
+
+                                let base_sphere_hitbox_radius = match current_representation_mode {
+                                    Representation::Spheres | Representation::BackboneAndSpheres => 1.5,
+                                    Representation::BallAndStick => 0.4,
+                                    Representation::SpaceFilling => 1.7,
+                                    _ => 1.0,
+                                };
+
+                                for (atom_global_index, current_atom_hierarchy) in protein_locked_data
+                                    .pdb
+                                    .atoms_with_hierarchy()
+                                    .into_iter()
+                                    .enumerate()
+                                {
+                                    let current_atom_reference = current_atom_hierarchy.atom();
+
+                                    if matches!(
+                                        current_representation_mode,
+                                        Representation::Spheres | Representation::BackboneAndSpheres
+                                    ) && current_atom_reference.name() != "CA"
+                                    {
+                                        continue;
+                                    }
+
+                                    let atom_position_tuple = current_atom_reference.pos();
+                                    let atom_world_position_vector = glam::Vec3::new(
+                                        atom_position_tuple.0 as f32,
+                                        atom_position_tuple.1 as f32,
+                                        atom_position_tuple.2 as f32,
+                                    );
+
+                                    let vector_from_ray_origin_to_atom_center =
+                                        ray_origin_point - atom_world_position_vector;
+
+                                    let quadratic_coefficient_b = vector_from_ray_origin_to_atom_center
+                                        .dot(ray_direction_unit_vector);
+                                    let quadratic_coefficient_c = vector_from_ray_origin_to_atom_center
+                                        .dot(vector_from_ray_origin_to_atom_center)
+                                        - base_sphere_hitbox_radius * base_sphere_hitbox_radius;
+
+                                    let intersection_discriminant_value = quadratic_coefficient_b
+                                        * quadratic_coefficient_b
+                                        - quadratic_coefficient_c;
+
+                                    if intersection_discriminant_value >= 0.0 {
+                                        let distance_to_intersection_point = -quadratic_coefficient_b
+                                            - intersection_discriminant_value.sqrt();
+                                        if distance_to_intersection_point > 0.0 {
+                                            if closest_intersection_hit_data.is_none()
+                                                || distance_to_intersection_point
+                                                    < closest_intersection_hit_data.as_ref().unwrap().2
+                                            {
+                                                closest_intersection_hit_data = Some((
+                                                    protein_identifier_name.clone(),
+                                                    atom_global_index,
+                                                    distance_to_intersection_point,
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if let Some((hit_protein_name, hit_atom_index, _)) =
+                                closest_intersection_hit_data
+                            {
+                                let target_atom_selection_identifier =
+                                    (hit_protein_name, hit_atom_index);
+
+                                if target_viewport
+                                    .selected_atoms
+                                    .contains(&target_atom_selection_identifier)
+                                {
+                                    target_viewport.selected_atoms
+                                        .retain(|item| item != &target_atom_selection_identifier);
+                                    target_viewport.distance_has_been_printed_for_current_selection = false;
+                                } else {
+                                    if target_viewport.selected_atoms.len() >= 2 {
+                                        target_viewport.selected_atoms.clear();
+                                        target_viewport.measurements.clear();
+                                    }
+                                    target_viewport.selected_atoms.push(target_atom_selection_identifier);
+                                    target_viewport.distance_has_been_printed_for_current_selection = false;
+                                }
+                            }
+                        }
+                    }
+                } else if !self.mouse_pressed {
+                    // Release capture when mouse is released
+                    self.captured_viewport_index = None;
+                }
+            }
+            MouseButton::Right => {
+                self.right_mouse_button_is_pressed = element_press_state == ElementState::Pressed;
+                if !self.right_mouse_button_is_pressed {
+                    self.captured_viewport_index = None;
+                } else if let Some((current_mouse_x_coordinate, _)) = self.last_recorded_mouse_cursor_position {
+                    // Start capture for right-click drag if not already captured
+                    if self.captured_viewport_index.is_none() {
+                        if let Some((viewport_index, _, _)) = self.get_viewport_at_mouse(current_mouse_x_coordinate) {
+                            self.captured_viewport_index = Some(viewport_index);
                         }
                     }
                 }
             }
-            KeyCode::KeyF => {
-                // Toggle surface for all proteins
-                let locked_protein_store = self.store.read().unwrap();
-                for protein_shared_handle in locked_protein_store.iter() {
-                    let mut protein_mutable_data = protein_shared_handle.write().unwrap();
-                    let current_visibility_status = protein_mutable_data
-                        .molecular_surface_mesh
-                        .is_surface_visible;
-                    protein_mutable_data
-                        .molecular_surface_mesh
-                        .is_surface_visible = !current_visibility_status;
-                }
-            }
-
-            KeyCode::Escape => std::process::exit(0),
             _ => {}
         }
     }
 
-    fn set_all_representation(&self, target_representation_mode: Representation) {
-        let locked_protein_store = self.store.read().unwrap();
-        for protein_shared_handle in locked_protein_store.iter() {
-            let mut protein_mutable_data = protein_shared_handle.write().unwrap();
-            protein_mutable_data.representation = target_representation_mode;
+    fn handle_mouse_move(&mut self, cursor_screen_position: (f64, f64)) {
+        if let Some((previous_mouse_x_coordinate, previous_mouse_y_coordinate)) = self.last_recorded_mouse_cursor_position
+        {
+            let mouse_movement_delta_x = (cursor_screen_position.0 - previous_mouse_x_coordinate) as f32;
+            let mouse_movement_delta_y = (cursor_screen_position.1 - previous_mouse_y_coordinate) as f32;
+
+            // Prioritize the captured viewport for rotation and translation
+            let viewport_index_to_interact_with = self.captured_viewport_index.or_else(|| {
+                self.get_viewport_at_mouse(cursor_screen_position.0).map(|(index, _, _)| index)
+            });
+
+            if let Some(active_viewport_index) = viewport_index_to_interact_with {
+                if active_viewport_index < self.viewports.len() {
+                    let target_viewport = &self.viewports[active_viewport_index];
+                    if self.mouse_pressed {
+                        target_viewport.camera.write().unwrap().rotate(
+                            -mouse_movement_delta_x * 0.01,
+                            mouse_movement_delta_y * 0.01,
+                        );
+                    } else if self.right_mouse_button_is_pressed {
+                        target_viewport.camera
+                            .write()
+                            .unwrap()
+                            .translate_camera_target_position(
+                                mouse_movement_delta_x,
+                                mouse_movement_delta_y,
+                            );
+                    }
+                }
+            }
+        }
+        self.last_recorded_mouse_cursor_position = Some(cursor_screen_position);
+    }
+
+    fn handle_scroll(&mut self, scroll_delta_value: f32) {
+        if let Some((current_mouse_x, _)) = self.last_recorded_mouse_cursor_position {
+            if let Some((viewport_index, _, _)) = self.get_viewport_at_mouse(current_mouse_x) {
+                self.viewports[viewport_index].camera.write().unwrap().zoom(scroll_delta_value);
+            }
         }
     }
 
-    fn set_all_color_scheme(&self, target_color_scheme: ColorScheme) {
-        let locked_protein_store = self.store.read().unwrap();
-        for protein_shared_handle in locked_protein_store.iter() {
-            let mut protein_mutable_data = protein_shared_handle.write().unwrap();
-            protein_mutable_data.color_scheme = target_color_scheme;
+    fn handle_key(&mut self, pressed_physical_keycode: KeyCode) {
+        // Apply key events to ALL viewports for now, or we could track active viewport
+        for viewport in &mut self.viewports {
+            match pressed_physical_keycode {
+                KeyCode::KeyR => {
+                    viewport.selected_atoms.clear();
+                    viewport.measurements.clear();
+                    viewport.distance_has_been_printed_for_current_selection = false;
+                    let mut camera = viewport.camera.write().unwrap();
+                    *camera = Camera::new(camera.aspect);
+                    let locked_protein_store = viewport.store.read().unwrap();
+                    let optional_first_protein_entry = locked_protein_store.iter().next().cloned();
+                    drop(locked_protein_store);
+
+                    if let Some(protein_shared_reference) = optional_first_protein_entry {
+                        let protein_locked_data = protein_shared_reference.read().unwrap();
+                        let protein_center_of_mass = protein_locked_data.center_of_mass();
+                        let (bounding_box_minimum, bounding_box_maximum) =
+                            protein_locked_data.bounding_box();
+                        let bounding_sphere_radius =
+                            (bounding_box_maximum - bounding_box_minimum).length() / 2.0;
+                        drop(protein_locked_data);
+                        camera.focus_on(protein_center_of_mass, bounding_sphere_radius);
+                    }
+                }
+
+                KeyCode::Digit1 => set_viewport_representation(viewport, Representation::Spheres),
+                KeyCode::Digit2 => set_viewport_representation(viewport, Representation::Backbone),
+                KeyCode::Digit3 => set_viewport_representation(viewport, Representation::BackboneAndSpheres),
+                KeyCode::Digit4 => set_viewport_representation(viewport, Representation::Sticks),
+                KeyCode::Digit5 => set_viewport_representation(viewport, Representation::BallAndStick),
+                KeyCode::Digit6 => set_viewport_representation(viewport, Representation::SpaceFilling),
+                KeyCode::Digit7 => set_viewport_representation(viewport, Representation::Lines),
+
+                KeyCode::KeyC => set_viewport_color_scheme(viewport, ColorScheme::ByChain),
+                KeyCode::KeyB => set_viewport_color_scheme(viewport, ColorScheme::ByBFactor),
+                KeyCode::KeyE => set_viewport_color_scheme(viewport, ColorScheme::ByElement),
+                KeyCode::KeyS => set_viewport_color_scheme(viewport, ColorScheme::BySecondary),
+
+                KeyCode::KeyM => {
+                    if viewport.selected_atoms.len() == 2
+                        && !viewport.distance_has_been_printed_for_current_selection
+                    {
+                        let locked_protein_store = viewport.store.read().unwrap();
+                        let mut global_atom_positions_lookup_table = std::collections::HashMap::new();
+                        for protein_shared_handle in locked_protein_store.iter() {
+                            let protein_locked_data = protein_shared_handle.read().unwrap();
+                            for (atom_indexing_counter, current_atom_hierarchy) in protein_locked_data
+                                .pdb
+                                .atoms_with_hierarchy()
+                                .into_iter()
+                                .enumerate()
+                            {
+                                let atom_position_tuple = current_atom_hierarchy.atom().pos();
+                                global_atom_positions_lookup_table.insert(
+                                    (protein_locked_data.name.clone(), atom_indexing_counter),
+                                    glam::Vec3::new(
+                                        atom_position_tuple.0 as f32,
+                                        atom_position_tuple.1 as f32,
+                                        atom_position_tuple.2 as f32,
+                                    ),
+                                );
+                            }
+                        }
+
+                        if let (
+                            Some(first_atom_selection_identifier),
+                            Some(second_atom_selection_identifier),
+                        ) = (viewport.selected_atoms.get(0), viewport.selected_atoms.get(1))
+                        {
+                            if let (Some(first_atom_world_position), Some(second_atom_world_position)) = (
+                                global_atom_positions_lookup_table.get(first_atom_selection_identifier),
+                                global_atom_positions_lookup_table
+                                    .get(second_atom_selection_identifier),
+                            ) {
+                                let calculated_distance_value =
+                                    first_atom_world_position.distance(*second_atom_world_position);
+                                info!(
+                                    "Calculated distance: {:.2} Angstroms",
+                                    calculated_distance_value
+                                );
+
+                                viewport.measurements.clear();
+                                viewport.measurements.push((0, 1));
+                                viewport.distance_has_been_printed_for_current_selection = true;
+                            }
+                        }
+                    }
+                }
+                KeyCode::KeyF => {
+                    let locked_protein_store = viewport.store.read().unwrap();
+                    for protein_shared_handle in locked_protein_store.iter() {
+                        let mut protein_mutable_data = protein_shared_handle.write().unwrap();
+                        let current_visibility_status = protein_mutable_data
+                            .molecular_surface_mesh
+                            .is_surface_visible;
+                        protein_mutable_data
+                            .molecular_surface_mesh
+                            .is_surface_visible = !current_visibility_status;
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        if pressed_physical_keycode == KeyCode::Escape {
+            std::process::exit(0);
         }
     }
 }
 
-/// The main application state managing multiple windows
+fn set_viewport_representation(
+    viewport: &ViewportState,
+    target_representation_mode: Representation,
+) {
+    let locked_protein_store = viewport.store.read().unwrap();
+    for protein_shared_handle in locked_protein_store.iter() {
+        let mut protein_mutable_data = protein_shared_handle.write().unwrap();
+        protein_mutable_data.representation = target_representation_mode;
+    }
+}
+
+fn set_viewport_color_scheme(viewport: &ViewportState, target_color_scheme: ColorScheme) {
+    let locked_protein_store = viewport.store.read().unwrap();
+    for protein_shared_handle in locked_protein_store.iter() {
+        let mut protein_mutable_data = protein_shared_handle.write().unwrap();
+        protein_mutable_data.color_scheme = target_color_scheme;
+    }
+}
+
+/// The main application state managing a single window with viewports
 struct App {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
-    windows: HashMap<WindowId, WindowState>,
+    window_state: Option<WindowState>,
     script_engine: ScriptEngine,
     global_store: Arc<RwLock<ProteinStore>>,
     global_camera: Arc<RwLock<Camera>>,
@@ -559,7 +641,7 @@ impl App {
             adapter: graphics_adapter,
             device: graphics_device,
             queue: command_queue,
-            windows: HashMap::new(),
+            window_state: None,
             script_engine: lua_script_engine,
             global_store,
             global_camera,
@@ -569,35 +651,38 @@ impl App {
         }
     }
 
+    fn ensure_window(&mut self, event_loop: &winit::event_loop::EventLoopWindowTarget<()>) -> &mut WindowState {
+        if self.window_state.is_none() {
+            let window = Arc::new(
+                WindowBuilder::new()
+                    .with_title("Protein Viewer (Split View)")
+                    .with_inner_size(winit::dpi::LogicalSize::new(1280, 800))
+                    .build(event_loop)
+                    .unwrap(),
+            );
+            self.window_state = Some(WindowState::new(
+                window,
+                &self.instance,
+                &self.adapter,
+                self.device.clone(),
+                self.queue.clone(),
+            ));
+        }
+        self.window_state.as_mut().unwrap()
+    }
+
     fn handle_script_events(&mut self, event_loop: &winit::event_loop::EventLoopWindowTarget<()>) {
         while let Ok(event) = self.script_event_rx.try_recv() {
             match event {
                 ScriptEvent::NewWindow(store, camera) => {
-                    let window = Arc::new(
-                        WindowBuilder::new()
-                            .with_title("Protein Viewer")
-                            .with_inner_size(winit::dpi::LogicalSize::new(1280, 800))
-                            .build(event_loop)
-                            .unwrap(),
-                    );
-                    let window_id = window.id();
-                    let window_state = WindowState::new(
-                        window,
-                        &self.instance,
-                        &self.adapter,
-                        self.device.clone(),
-                        self.queue.clone(),
-                        store,
-                        camera,
-                    );
-                    self.windows.insert(window_id, window_state);
+                    let window_state = self.ensure_window(event_loop);
+                    window_state.add_viewport(store, camera);
                 }
             }
         }
     }
 
     fn update(&mut self, event_loop: &winit::event_loop::EventLoopWindowTarget<()>) {
-        // Debounce script hot-reload: drain the channel and only keep the last path
         let mut last_reloaded_path = None;
         while let Ok(reloaded_script_path) = self.script_rx.try_recv() {
             last_reloaded_path = Some(reloaded_script_path);
@@ -606,11 +691,11 @@ impl App {
         if let Some(reloaded_script_path) = last_reloaded_path {
             info!("Reloading script from path: {:?}", reloaded_script_path);
             if let Some(reloaded_script_path_string) = reloaded_script_path.to_str() {
-                // DISCARD any pending window creation events from the previous run
                 while self.script_event_rx.try_recv().is_ok() {}
 
-                // RESET STATE: Close all windows and clear global store on reload
-                self.windows.clear();
+                if let Some(current_window_state) = &mut self.window_state {
+                    current_window_state.viewports.clear();
+                }
                 self.global_store.write().unwrap().clear();
 
                 if let Err(hot_reload_error) =
@@ -623,8 +708,8 @@ impl App {
 
         self.handle_script_events(event_loop);
 
-        for window_state in self.windows.values_mut() {
-            window_state.update();
+        if let Some(current_window_state) = &mut self.window_state {
+            current_window_state.update();
         }
     }
 }
@@ -633,7 +718,6 @@ async fn run(initial_script: Option<String>) {
     let main_event_loop = EventLoop::new().unwrap();
     let mut app = App::new().await;
 
-    // Run the initial script if provided by the user
     if let Some(provided_initial_script_path) = initial_script {
         if let Err(script_execution_error) =
             app.script_engine.run_file(&provided_initial_script_path)
@@ -648,15 +732,11 @@ async fn run(initial_script: Option<String>) {
     main_event_loop.set_control_flow(ControlFlow::Poll);
     let _ = main_event_loop.run(move |winit_event, event_loop_window_target| {
         match winit_event {
-            Event::WindowEvent { window_id, event } => {
-                if let Some(window_state) = app.windows.get_mut(&window_id) {
+            Event::WindowEvent { window_id: _, event } => {
+                if let Some(window_state) = app.window_state.as_mut() {
                     match event {
                         WindowEvent::CloseRequested => {
-                            app.windows.remove(&window_id);
-                            if app.windows.is_empty() {
-                                // Optionally exit if last window closed,
-                                // but we might want to keep the script engine running for new windows
-                            }
+                            event_loop_window_target.exit();
                         }
                         WindowEvent::Resized(new_window_size) => {
                             window_state.resize(&app.device, new_window_size)
@@ -699,8 +779,8 @@ async fn run(initial_script: Option<String>) {
             }
             Event::AboutToWait => {
                 app.update(event_loop_window_target);
-                for window_state in app.windows.values() {
-                    window_state.window.request_redraw();
+                if let Some(ws) = &app.window_state {
+                    ws.window.request_redraw();
                 }
             }
             _ => {}
