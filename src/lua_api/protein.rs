@@ -6,7 +6,7 @@
 use mlua::UserData;
 use std::sync::{Arc, RwLock};
 
-use crate::protein::{ProteinData, Representation, ColorScheme};
+use crate::protein::{ColorScheme, ProteinData, Representation};
 
 /// A Lua-exposed wrapper around a shared protein data object
 #[derive(Clone)]
@@ -46,26 +46,42 @@ impl UserData for LuaProtein {
         methods.add_method("center_of_mass", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let center_of_mass_vector = locked_protein_data.center_of_mass();
-            Ok((center_of_mass_vector.x, center_of_mass_vector.y, center_of_mass_vector.z))
+            Ok((
+                center_of_mass_vector.x,
+                center_of_mass_vector.y,
+                center_of_mass_vector.z,
+            ))
         });
 
         // p:bounding_box() returns the axis-aligned bounding box of the protein
         methods.add_method("bounding_box", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
-            let (minimum_coordinate_bound, maximum_coordinate_bound) = locked_protein_data.bounding_box();
-            Ok((minimum_coordinate_bound.x, minimum_coordinate_bound.y, minimum_coordinate_bound.z, maximum_coordinate_bound.x, maximum_coordinate_bound.y, maximum_coordinate_bound.z))
+            let (minimum_coordinate_bound, maximum_coordinate_bound) =
+                locked_protein_data.bounding_box();
+            Ok((
+                minimum_coordinate_bound.x,
+                minimum_coordinate_bound.y,
+                minimum_coordinate_bound.z,
+                maximum_coordinate_bound.x,
+                maximum_coordinate_bound.y,
+                maximum_coordinate_bound.z,
+            ))
         });
 
         // p:ca_count() returns the number of Alpha Carbon (CA) atoms
         methods.add_method("ca_count", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
-            Ok(locked_protein_data.get_alpha_carbon_positions_and_chain_identifiers().len())
+            Ok(locked_protein_data
+                .get_alpha_carbon_positions_and_chain_identifiers()
+                .len())
         });
 
         // p:residue_count() returns an approximate count of residues based on CA atoms
         methods.add_method("residue_count", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
-            Ok(locked_protein_data.get_alpha_carbon_positions_and_chain_identifiers().len())
+            Ok(locked_protein_data
+                .get_alpha_carbon_positions_and_chain_identifiers()
+                .len())
         });
 
         // p:show() and p:hide() control whether the protein is rendered
@@ -111,7 +127,13 @@ impl UserData for LuaProtein {
                 lua_atom_data_table.set("y", atom_coordinates_tuple.1)?;
                 lua_atom_data_table.set("z", atom_coordinates_tuple.2)?;
                 lua_atom_data_table.set("name", current_atom_reference.name())?;
-                lua_atom_data_table.set("element", current_atom_reference.element().map(|element_reference| element_reference.symbol()).unwrap_or("?"))?;
+                lua_atom_data_table.set(
+                    "element",
+                    current_atom_reference
+                        .element()
+                        .map(|element_reference| element_reference.symbol())
+                        .unwrap_or("?"),
+                )?;
                 lua_atom_data_table.set("bfactor", current_atom_reference.b_factor())?;
                 lua_atoms_collection_table.set(atom_indexing_counter, lua_atom_data_table)?;
                 atom_indexing_counter += 1;
@@ -121,53 +143,65 @@ impl UserData for LuaProtein {
         });
 
         // p:residues(chain_id) returns a table containing information for residues, optionally filtered by chain
-        methods.add_method("residues", |lua_context, this, chain_identifier_filter: Option<String>| {
-            let locked_protein_data = this.inner.read().unwrap();
-            let lua_residues_collection_table = lua_context.create_table()?;
+        methods.add_method(
+            "residues",
+            |lua_context, this, chain_identifier_filter: Option<String>| {
+                let locked_protein_data = this.inner.read().unwrap();
+                let lua_residues_collection_table = lua_context.create_table()?;
 
-            let mut residue_indexing_counter = 1;
-            for current_chain_reference in locked_protein_data.pdb.chains() {
-                if let Some(ref filter_string) = chain_identifier_filter {
-                    if current_chain_reference.id() != filter_string {
-                        continue;
+                let mut residue_indexing_counter = 1;
+                for current_chain_reference in locked_protein_data.pdb.chains() {
+                    if let Some(ref filter_string) = chain_identifier_filter {
+                        if current_chain_reference.id() != filter_string {
+                            continue;
+                        }
+                    }
+
+                    for current_residue_reference in current_chain_reference.residues() {
+                        let lua_residue_data_table = lua_context.create_table()?;
+                        lua_residue_data_table.set("chain", current_chain_reference.id())?;
+                        lua_residue_data_table
+                            .set("number", current_residue_reference.serial_number())?;
+
+                        // Get residue name from first conformer
+                        if let Some(current_conformer_reference) =
+                            current_residue_reference.conformers().next()
+                        {
+                            lua_residue_data_table
+                                .set("name", current_conformer_reference.name())?;
+                        }
+
+                        lua_residues_collection_table
+                            .set(residue_indexing_counter, lua_residue_data_table)?;
+                        residue_indexing_counter += 1;
                     }
                 }
 
-                for current_residue_reference in current_chain_reference.residues() {
-                    let lua_residue_data_table = lua_context.create_table()?;
-                    lua_residue_data_table.set("chain", current_chain_reference.id())?;
-                    lua_residue_data_table.set("number", current_residue_reference.serial_number())?;
-
-                    // Get residue name from first conformer
-                    if let Some(current_conformer_reference) = current_residue_reference.conformers().next() {
-                        lua_residue_data_table.set("name", current_conformer_reference.name())?;
-                    }
-
-                    lua_residues_collection_table.set(residue_indexing_counter, lua_residue_data_table)?;
-                    residue_indexing_counter += 1;
-                }
-            }
-
-            Ok(lua_residues_collection_table)
-        });
+                Ok(lua_residues_collection_table)
+            },
+        );
 
         // p:representation(mode) sets the representation mode
         // Available modes are "spheres", "backbone", and "both"
-        methods.add_method_mut("representation", |_, this, requested_representation_mode: String| {
-            let mut mutable_protein_data = this.inner.write().unwrap();
-            mutable_protein_data.representation = match requested_representation_mode.to_lowercase().as_str() {
-                "spheres" | "sphere" => Representation::Spheres,
-                "backbone" | "trace" | "line" | "lines" => Representation::Backbone,
-                "both" | "all" => Representation::BackboneAndSpheres,
-                _ => {
-                    return Err(mlua::Error::RuntimeError(format!(
+        methods.add_method_mut(
+            "representation",
+            |_, this, requested_representation_mode: String| {
+                let mut mutable_protein_data = this.inner.write().unwrap();
+                mutable_protein_data.representation =
+                    match requested_representation_mode.to_lowercase().as_str() {
+                        "spheres" | "sphere" => Representation::Spheres,
+                        "backbone" | "trace" | "line" | "lines" => Representation::Backbone,
+                        "both" | "all" => Representation::BackboneAndSpheres,
+                        _ => {
+                            return Err(mlua::Error::RuntimeError(format!(
                         "Unknown representation: '{}'. Use 'spheres', 'backbone', or 'both'",
                         requested_representation_mode
                     )));
-                }
-            };
-            Ok(())
-        });
+                        }
+                    };
+                Ok(())
+            },
+        );
 
         // p:color_by(scheme) sets the color scheme
         // Available schemes are "chain", "element", "bfactor", and "secondary"
@@ -189,10 +223,23 @@ impl UserData for LuaProtein {
         });
 
         // p:color(r, g, b) sets a uniform RGB color for the entire protein
-        methods.add_method_mut("color", |_, this, (red_color_component, green_color_component, blue_color_component): (f32, f32, f32)| {
-            let mut mutable_protein_data = this.inner.write().unwrap();
-            mutable_protein_data.color_scheme = ColorScheme::Uniform([red_color_component, green_color_component, blue_color_component]);
-            Ok(())
-        });
+        methods.add_method_mut(
+            "color",
+            |_,
+             this,
+             (red_color_component, green_color_component, blue_color_component): (
+                f32,
+                f32,
+                f32,
+            )| {
+                let mut mutable_protein_data = this.inner.write().unwrap();
+                mutable_protein_data.color_scheme = ColorScheme::Uniform([
+                    red_color_component,
+                    green_color_component,
+                    blue_color_component,
+                ]);
+                Ok(())
+            },
+        );
     }
 }

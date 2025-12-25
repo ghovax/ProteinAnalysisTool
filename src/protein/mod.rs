@@ -6,4 +6,4 @@
 pub mod fetch;
 pub mod structure;
 
-pub use structure::{ProteinData, ProteinStore, Representation, ColorScheme};
+pub use structure::{ColorScheme, ProteinData, ProteinStore, Representation};

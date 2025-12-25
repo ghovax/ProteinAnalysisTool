@@ -1,15 +1,15 @@
 //! WGPU renderer implementation for protein visualization
-//! 
+//!
 //! This module handles the creation of render pipelines, management of GPU buffers,
 //! and the actual drawing of protein structures (spheres and lines)
 
+use glam::Vec4Swizzles;
 use std::collections::HashMap;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
-use glam::Vec4Swizzles;
 
 use super::Camera;
-use crate::protein::{ProteinStore, Representation, ColorScheme};
+use crate::protein::{ColorScheme, ProteinStore, Representation};
 
 /// Instance data for rendering a sphere (atom)
 #[repr(C)]
@@ -49,24 +49,24 @@ struct Uniforms {
 
 /// Default colors for protein chains
 const CHAIN_COLORS: &[[f32; 3]] = &[
-    [0.2, 0.6, 1.0],  // Blue
-    [1.0, 0.4, 0.4],  // Red
-    [0.4, 0.9, 0.4],  // Green
-    [1.0, 0.8, 0.2],  // Yellow
-    [0.9, 0.5, 0.9],  // Magenta
-    [0.5, 0.9, 0.9],  // Cyan
-    [1.0, 0.6, 0.3],  // Orange
-    [0.7, 0.7, 0.9],  // Light purple
+    [0.2, 0.6, 1.0], // Blue
+    [1.0, 0.4, 0.4], // Red
+    [0.4, 0.9, 0.4], // Green
+    [1.0, 0.8, 0.2], // Yellow
+    [0.9, 0.5, 0.9], // Magenta
+    [0.5, 0.9, 0.9], // Cyan
+    [1.0, 0.6, 0.3], // Orange
+    [0.7, 0.7, 0.9], // Light purple
 ];
 
 /// Colors assigned to chemical elements
 const ELEMENT_COLORS: &[(&str, [f32; 3])] = &[
-    ("C", [0.5, 0.5, 0.5]),   // Carbon - gray
-    ("N", [0.2, 0.2, 1.0]),   // Nitrogen - blue
-    ("O", [1.0, 0.2, 0.2]),   // Oxygen - red
-    ("S", [1.0, 1.0, 0.2]),   // Sulfur - yellow
-    ("H", [1.0, 1.0, 1.0]),   // Hydrogen - white
-    ("P", [1.0, 0.5, 0.0]),   // Phosphorus - orange
+    ("C", [0.5, 0.5, 0.5]), // Carbon - gray
+    ("N", [0.2, 0.2, 1.0]), // Nitrogen - blue
+    ("O", [1.0, 0.2, 0.2]), // Oxygen - red
+    ("S", [1.0, 1.0, 0.2]), // Sulfur - yellow
+    ("H", [1.0, 1.0, 1.0]), // Hydrogen - white
+    ("P", [1.0, 0.5, 0.0]), // Phosphorus - orange
 ];
 
 /// Returns the color associated with a given element symbol
@@ -80,9 +80,14 @@ fn _get_element_color(element_symbol: &str) -> [f32; 3] {
 }
 
 /// Maps a B-factor value to a color using a Blue-White-Red gradient
-fn bfactor_to_color(temperature_factor: f32, minimum_bfactor: f32, maximum_bfactor: f32) -> [f32; 3] {
+fn bfactor_to_color(
+    temperature_factor: f32,
+    minimum_bfactor: f32,
+    maximum_bfactor: f32,
+) -> [f32; 3] {
     let normalized_factor = if maximum_bfactor > minimum_bfactor {
-        ((temperature_factor - minimum_bfactor) / (maximum_bfactor - minimum_bfactor)).clamp(0.0, 1.0)
+        ((temperature_factor - minimum_bfactor) / (maximum_bfactor - minimum_bfactor))
+            .clamp(0.0, 1.0)
     } else {
         0.5
     };
@@ -172,72 +177,74 @@ impl Renderer {
             }],
         });
 
-        let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[&global_uniform_bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Render Pipeline Layout"),
+                bind_group_layouts: &[&global_uniform_bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         // Sphere pipeline (billboard quads)
-        let sphere_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Sphere Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader_module,
-                entry_point: "vs_sphere",
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<SphereInstance>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 12,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Float32,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 16,
-                            shader_location: 2,
-                            format: wgpu::VertexFormat::Float32x3,
-                        },
-                        wgpu::VertexAttribute {
-                            offset: 28,
-                            shader_location: 3,
-                            format: wgpu::VertexFormat::Float32,
-                        },
-                    ],
-                }],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader_module,
-                entry_point: "fs_sphere",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
+        let sphere_render_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Sphere Pipeline"),
+                layout: Some(&render_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader_module,
+                    entry_point: "vs_sphere",
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<SphereInstance>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                offset: 0,
+                                shader_location: 0,
+                                format: wgpu::VertexFormat::Float32x3,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 12,
+                                shader_location: 1,
+                                format: wgpu::VertexFormat::Float32,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 16,
+                                shader_location: 2,
+                                format: wgpu::VertexFormat::Float32x3,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 28,
+                                shader_location: 3,
+                                format: wgpu::VertexFormat::Float32,
+                            },
+                        ],
+                    }],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader_module,
+                    entry_point: "fs_sphere",
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: surface_format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
+            });
 
         // Line pipeline
         let line_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -249,7 +256,7 @@ impl Renderer {
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<LineVertex>() as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[ 
+                    attributes: &[
                         wgpu::VertexAttribute {
                             offset: 0,
                             shader_location: 0,
@@ -311,7 +318,12 @@ impl Renderer {
         let swash_cache = glyphon::SwashCache::new();
         let cache = glyphon::Cache::new(&device);
         let mut text_atlas = glyphon::TextAtlas::new(&device, &queue, &cache, surface_format);
-        let text_renderer = glyphon::TextRenderer::new(&mut text_atlas, &device, wgpu::MultisampleState::default(), None);
+        let text_renderer = glyphon::TextRenderer::new(
+            &mut text_atlas,
+            &device,
+            wgpu::MultisampleState::default(),
+            None,
+        );
         let text_buffer = glyphon::Buffer::new(&mut font_system, glyphon::Metrics::new(24.0, 30.0));
         let viewport = glyphon::Viewport::new(&device, &cache);
 
@@ -359,11 +371,17 @@ impl Renderer {
     /// Resizes the depth texture when the window is resized
     pub fn resize(&mut self, width: u32, height: u32) {
         self.depth_stencil_texture_view = Self::create_depth_texture(&self.device, width, height);
-        self.viewport.update(&self.queue, glyphon::Resolution { width, height });
+        self.viewport
+            .update(&self.queue, glyphon::Resolution { width, height });
     }
 
     /// Updates the GPU buffers with the latest protein instance data
-    pub fn update_instances(&mut self, protein_data_store: &ProteinStore, currently_selected_atoms: &[(String, usize)], active_measurement_pairs: &[(usize, usize)]) {
+    pub fn update_instances(
+        &mut self,
+        protein_data_store: &ProteinStore,
+        currently_selected_atoms: &[(String, usize)],
+        active_measurement_pairs: &[(usize, usize)],
+    ) {
         let mut sphere_instances_collection = Vec::new();
         let mut line_vertices_collection = Vec::new();
 
@@ -381,13 +399,17 @@ impl Renderer {
             let active_color_scheme_mode = protein_locked_data.color_scheme;
 
             // Get B-factor range for normalization during coloring
-            let (minimum_bfactor_value, maximum_bfactor_value) = protein_locked_data.calculate_bfactor_range();
+            let (minimum_bfactor_value, maximum_bfactor_value) =
+                protein_locked_data.calculate_bfactor_range();
 
             // Helper to get color for a specific chain identifier
             let get_color_for_chain_identifier = |chain_id_string: &str| -> [f32; 3] {
                 match active_color_scheme_mode {
                     ColorScheme::ByChain => {
-                        let chain_index_position = available_chain_identifiers_collection.iter().position(|c| c == chain_id_string).unwrap_or(0);
+                        let chain_index_position = available_chain_identifiers_collection
+                            .iter()
+                            .position(|c| c == chain_id_string)
+                            .unwrap_or(0);
                         CHAIN_COLORS[chain_index_position % CHAIN_COLORS.len()]
                     }
                     ColorScheme::ByElement => [0.5, 0.5, 0.5], // Default for Alpha Carbon (Carbon)
@@ -406,38 +428,79 @@ impl Renderer {
             };
 
             // Generate sphere instances if the representation mode requires them
-            if active_representation_mode == Representation::Spheres || active_representation_mode == Representation::BackboneAndSpheres {
+            if active_representation_mode == Representation::Spheres
+                || active_representation_mode == Representation::BackboneAndSpheres
+            {
                 if active_color_scheme_mode == ColorScheme::BySecondary {
-                    let alpha_carbon_secondary_structure_data = protein_locked_data.get_alpha_carbon_data_with_secondary_structure();
-                    for (atom_indexing_counter, (atom_world_position_vector, _, secondary_structure_type)) in alpha_carbon_secondary_structure_data.into_iter().enumerate() {
-                        atom_world_positions_lookup_table.insert((protein_identifier_name.clone(), atom_indexing_counter), atom_world_position_vector);
-                        
-                        let final_calculated_atom_color = get_secondary_structure_color(secondary_structure_type);
-                        let is_atom_currently_selected = currently_selected_atoms.contains(&(protein_identifier_name.clone(), atom_indexing_counter));
+                    let alpha_carbon_secondary_structure_data =
+                        protein_locked_data.get_alpha_carbon_data_with_secondary_structure();
+                    for (
+                        atom_indexing_counter,
+                        (atom_world_position_vector, _, secondary_structure_type),
+                    ) in alpha_carbon_secondary_structure_data
+                        .into_iter()
+                        .enumerate()
+                    {
+                        atom_world_positions_lookup_table.insert(
+                            (protein_identifier_name.clone(), atom_indexing_counter),
+                            atom_world_position_vector,
+                        );
+
+                        let final_calculated_atom_color =
+                            get_secondary_structure_color(secondary_structure_type);
+                        let is_atom_currently_selected = currently_selected_atoms
+                            .contains(&(protein_identifier_name.clone(), atom_indexing_counter));
 
                         sphere_instances_collection.push(SphereInstance {
-                            position: [atom_world_position_vector.x, atom_world_position_vector.y, atom_world_position_vector.z],
+                            position: [
+                                atom_world_position_vector.x,
+                                atom_world_position_vector.y,
+                                atom_world_position_vector.z,
+                            ],
                             radius: 1.5,
                             color: final_calculated_atom_color,
                             selection_factor: if is_atom_currently_selected { 1.0 } else { 0.0 },
                         });
                     }
                 } else {
-                    let alpha_carbon_data_with_bfactors_collection = protein_locked_data.get_alpha_carbon_data_with_bfactors();
-                    for (atom_indexing_counter, (atom_world_position_vector, target_chain_identifier, atom_temperature_factor)) in alpha_carbon_data_with_bfactors_collection.into_iter().enumerate() {
+                    let alpha_carbon_data_with_bfactors_collection =
+                        protein_locked_data.get_alpha_carbon_data_with_bfactors();
+                    for (
+                        atom_indexing_counter,
+                        (
+                            atom_world_position_vector,
+                            target_chain_identifier,
+                            atom_temperature_factor,
+                        ),
+                    ) in alpha_carbon_data_with_bfactors_collection
+                        .into_iter()
+                        .enumerate()
+                    {
                         // Store world position for distance measurements
-                        atom_world_positions_lookup_table.insert((protein_identifier_name.clone(), atom_indexing_counter), atom_world_position_vector);
+                        atom_world_positions_lookup_table.insert(
+                            (protein_identifier_name.clone(), atom_indexing_counter),
+                            atom_world_position_vector,
+                        );
 
                         let final_calculated_atom_color = match active_color_scheme_mode {
-                            ColorScheme::ByBFactor => bfactor_to_color(atom_temperature_factor, minimum_bfactor_value, maximum_bfactor_value),
+                            ColorScheme::ByBFactor => bfactor_to_color(
+                                atom_temperature_factor,
+                                minimum_bfactor_value,
+                                maximum_bfactor_value,
+                            ),
                             ColorScheme::ByElement => _get_element_color("C"), // Alpha Carbon is Carbon
                             _ => get_color_for_chain_identifier(&target_chain_identifier),
                         };
 
-                        let is_atom_currently_selected = currently_selected_atoms.contains(&(protein_identifier_name.clone(), atom_indexing_counter));
+                        let is_atom_currently_selected = currently_selected_atoms
+                            .contains(&(protein_identifier_name.clone(), atom_indexing_counter));
 
                         sphere_instances_collection.push(SphereInstance {
-                            position: [atom_world_position_vector.x, atom_world_position_vector.y, atom_world_position_vector.z],
+                            position: [
+                                atom_world_position_vector.x,
+                                atom_world_position_vector.y,
+                                atom_world_position_vector.z,
+                            ],
                             radius: 1.5,
                             color: final_calculated_atom_color,
                             selection_factor: if is_atom_currently_selected { 1.0 } else { 0.0 },
@@ -446,39 +509,77 @@ impl Renderer {
                 }
             } else {
                 // Still need to fill atom_world_positions_lookup_table for measurements even if spheres aren't drawn
-                let alpha_carbon_positions_and_chain_identifiers_collection = protein_locked_data.get_alpha_carbon_positions_and_chain_identifiers();
-                for (atom_indexing_counter, (atom_world_position_vector, _)) in alpha_carbon_positions_and_chain_identifiers_collection.into_iter().enumerate() {
-                    atom_world_positions_lookup_table.insert((protein_identifier_name.clone(), atom_indexing_counter), atom_world_position_vector);
+                let alpha_carbon_positions_and_chain_identifiers_collection =
+                    protein_locked_data.get_alpha_carbon_positions_and_chain_identifiers();
+                for (atom_indexing_counter, (atom_world_position_vector, _)) in
+                    alpha_carbon_positions_and_chain_identifiers_collection
+                        .into_iter()
+                        .enumerate()
+                {
+                    atom_world_positions_lookup_table.insert(
+                        (protein_identifier_name.clone(), atom_indexing_counter),
+                        atom_world_position_vector,
+                    );
                 }
             }
 
             // Generate backbone backbone trace lines if needed
-            if active_representation_mode == Representation::Backbone || active_representation_mode == Representation::BackboneAndSpheres {
+            if active_representation_mode == Representation::Backbone
+                || active_representation_mode == Representation::BackboneAndSpheres
+            {
                 if active_color_scheme_mode == ColorScheme::BySecondary {
-                    let backbone_segment_collection = protein_locked_data.get_backbone_segments_with_secondary_structure();
-                    for (segment_start_position, segment_end_position, _, secondary_structure_type) in backbone_segment_collection {
-                        let final_line_segment_color = get_secondary_structure_color(secondary_structure_type);
+                    let backbone_segment_collection =
+                        protein_locked_data.get_backbone_segments_with_secondary_structure();
+                    for (
+                        segment_start_position,
+                        segment_end_position,
+                        _,
+                        secondary_structure_type,
+                    ) in backbone_segment_collection
+                    {
+                        let final_line_segment_color =
+                            get_secondary_structure_color(secondary_structure_type);
 
                         line_vertices_collection.push(LineVertex {
-                            position: [segment_start_position.x, segment_start_position.y, segment_start_position.z],
+                            position: [
+                                segment_start_position.x,
+                                segment_start_position.y,
+                                segment_start_position.z,
+                            ],
                             color: final_line_segment_color,
                         });
                         line_vertices_collection.push(LineVertex {
-                            position: [segment_end_position.x, segment_end_position.y, segment_end_position.z],
+                            position: [
+                                segment_end_position.x,
+                                segment_end_position.y,
+                                segment_end_position.z,
+                            ],
                             color: final_line_segment_color,
                         });
                     }
                 } else {
-                    let backbone_segment_collection = protein_locked_data.get_backbone_segments_for_rendering();
-                    for (segment_start_position, segment_end_position, target_chain_identifier) in backbone_segment_collection {
-                        let final_line_segment_color = get_color_for_chain_identifier(&target_chain_identifier);
+                    let backbone_segment_collection =
+                        protein_locked_data.get_backbone_segments_for_rendering();
+                    for (segment_start_position, segment_end_position, target_chain_identifier) in
+                        backbone_segment_collection
+                    {
+                        let final_line_segment_color =
+                            get_color_for_chain_identifier(&target_chain_identifier);
 
                         line_vertices_collection.push(LineVertex {
-                            position: [segment_start_position.x, segment_start_position.y, segment_start_position.z],
+                            position: [
+                                segment_start_position.x,
+                                segment_start_position.y,
+                                segment_start_position.z,
+                            ],
                             color: final_line_segment_color,
                         });
                         line_vertices_collection.push(LineVertex {
-                            position: [segment_end_position.x, segment_end_position.y, segment_end_position.z],
+                            position: [
+                                segment_end_position.x,
+                                segment_end_position.y,
+                                segment_end_position.z,
+                            ],
                             color: final_line_segment_color,
                         });
                     }
@@ -489,14 +590,28 @@ impl Renderer {
         // Add measurement lines between selected atoms
         let measurement_line_color = [1.0, 1.0, 1.0]; // Pure white for measurement lines
         for &(first_atom_selection_index, second_atom_selection_index) in active_measurement_pairs {
-            if let (Some(first_atom_selection_handle), Some(second_atom_selection_handle)) = (currently_selected_atoms.get(first_atom_selection_index), currently_selected_atoms.get(second_atom_selection_index)) {
-                if let (Some(first_atom_world_position), Some(second_atom_world_position)) = (atom_world_positions_lookup_table.get(first_atom_selection_handle), atom_world_positions_lookup_table.get(second_atom_selection_handle)) {
+            if let (Some(first_atom_selection_handle), Some(second_atom_selection_handle)) = (
+                currently_selected_atoms.get(first_atom_selection_index),
+                currently_selected_atoms.get(second_atom_selection_index),
+            ) {
+                if let (Some(first_atom_world_position), Some(second_atom_world_position)) = (
+                    atom_world_positions_lookup_table.get(first_atom_selection_handle),
+                    atom_world_positions_lookup_table.get(second_atom_selection_handle),
+                ) {
                     line_vertices_collection.push(LineVertex {
-                        position: [first_atom_world_position.x, first_atom_world_position.y, first_atom_world_position.z],
+                        position: [
+                            first_atom_world_position.x,
+                            first_atom_world_position.y,
+                            first_atom_world_position.z,
+                        ],
                         color: measurement_line_color,
                     });
                     line_vertices_collection.push(LineVertex {
-                        position: [second_atom_world_position.x, second_atom_world_position.y, second_atom_world_position.z],
+                        position: [
+                            second_atom_world_position.x,
+                            second_atom_world_position.y,
+                            second_atom_world_position.z,
+                        ],
                         color: measurement_line_color,
                     });
                 }
@@ -506,15 +621,22 @@ impl Renderer {
         // Update GPU sphere instance buffer
         self.sphere_count = sphere_instances_collection.len() as u32;
         if !sphere_instances_collection.is_empty() {
-            let serialized_sphere_instance_data = bytemuck::cast_slice(&sphere_instances_collection);
+            let serialized_sphere_instance_data =
+                bytemuck::cast_slice(&sphere_instances_collection);
             if serialized_sphere_instance_data.len() as u64 > self.sphere_instance_buffer.size() {
-                self.sphere_instance_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Sphere Instance Buffer"),
-                    contents: serialized_sphere_instance_data,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                });
+                self.sphere_instance_buffer =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Sphere Instance Buffer"),
+                            contents: serialized_sphere_instance_data,
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        });
             } else {
-                self.queue.write_buffer(&self.sphere_instance_buffer, 0, serialized_sphere_instance_data);
+                self.queue.write_buffer(
+                    &self.sphere_instance_buffer,
+                    0,
+                    serialized_sphere_instance_data,
+                );
             }
         }
 
@@ -523,13 +645,16 @@ impl Renderer {
         if !line_vertices_collection.is_empty() {
             let serialized_line_vertex_data = bytemuck::cast_slice(&line_vertices_collection);
             if serialized_line_vertex_data.len() as u64 > self.line_vertex_buffer.size() {
-                self.line_vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Line Vertex Buffer"),
-                    contents: serialized_line_vertex_data,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                });
+                self.line_vertex_buffer =
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("Line Vertex Buffer"),
+                            contents: serialized_line_vertex_data,
+                            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        });
             } else {
-                self.queue.write_buffer(&self.line_vertex_buffer, 0, serialized_line_vertex_data);
+                self.queue
+                    .write_buffer(&self.line_vertex_buffer, 0, serialized_line_vertex_data);
             }
         }
     }
@@ -544,43 +669,52 @@ impl Renderer {
         viewport_height: u32,
     ) -> wgpu::CommandBuffer {
         let global_uniform_values_structure = Uniforms {
-            view_projection_matrix: camera_object_handle.view_projection_matrix().to_cols_array_2d(),
+            view_projection_matrix: camera_object_handle
+                .view_projection_matrix()
+                .to_cols_array_2d(),
             camera_world_position: camera_object_handle.position().to_array(),
             _padding: 0.0,
         };
-        self.queue.write_buffer(&self.global_uniform_buffer, 0, bytemuck::bytes_of(&global_uniform_values_structure));
+        self.queue.write_buffer(
+            &self.global_uniform_buffer,
+            0,
+            bytemuck::bytes_of(&global_uniform_values_structure),
+        );
 
-        let mut graphics_command_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Main Render Command Encoder"),
-        });
+        let mut graphics_command_encoder =
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Main Render Command Encoder"),
+                });
 
         {
-            let mut active_render_pass = graphics_command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Protein Visualization Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target_texture_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.1,
-                            b: 0.15,
-                            a: 1.0,
+            let mut active_render_pass =
+                graphics_command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Protein Visualization Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target_texture_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.1,
+                                g: 0.1,
+                                b: 0.15,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.depth_stencil_texture_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
                         }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_stencil_texture_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
+                        stencil_ops: None,
                     }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
 
             // Draw backbone trace lines first
             if self.line_vertex_count > 0 {
@@ -601,14 +735,20 @@ impl Renderer {
 
         // Prepare and render UI text labels
         let view_projection_matrix = camera_object_handle.view_projection_matrix();
-        
+
         let mut combined_ui_text_string = String::new();
         for current_text_label in text_labels_collection {
             if current_text_label.position != glam::Vec3::ZERO {
-                let clip_space_position = view_projection_matrix * current_text_label.position.extend(1.0);
+                let clip_space_position =
+                    view_projection_matrix * current_text_label.position.extend(1.0);
                 if clip_space_position.w > 0.0 {
-                    let normalized_device_coordinates = clip_space_position.xyz() / clip_space_position.w;
-                    if normalized_device_coordinates.x.abs() <= 1.0 && normalized_device_coordinates.y.abs() <= 1.0 && normalized_device_coordinates.z >= 0.0 && normalized_device_coordinates.z <= 1.0 {
+                    let normalized_device_coordinates =
+                        clip_space_position.xyz() / clip_space_position.w;
+                    if normalized_device_coordinates.x.abs() <= 1.0
+                        && normalized_device_coordinates.y.abs() <= 1.0
+                        && normalized_device_coordinates.z >= 0.0
+                        && normalized_device_coordinates.z <= 1.0
+                    {
                         // Position on screen (placeholder logic for combined string)
                         combined_ui_text_string.push_str(&current_text_label.text);
                         combined_ui_text_string.push(' ');
@@ -622,49 +762,60 @@ impl Renderer {
         }
 
         if !combined_ui_text_string.is_empty() {
-            self.text_buffer.set_text(&mut self.font_system, &combined_ui_text_string, glyphon::Attrs::new().family(glyphon::Family::SansSerif), glyphon::Shaping::Advanced);
-            self.text_buffer.shape_until_scroll(&mut self.font_system, true);
-
-            self.text_renderer.prepare(
-                &self.device,
-                &self.queue,
+            self.text_buffer.set_text(
                 &mut self.font_system,
-                &mut self.text_atlas,
-                &self.viewport,
-                [glyphon::TextArea {
-                    buffer: &self.text_buffer,
-                    left: 20.0,
-                    top: 20.0,
-                    scale: 1.0,
-                    bounds: glyphon::TextBounds {
-                        left: 0,
-                        top: 0,
-                        right: viewport_width as i32,
-                        bottom: viewport_height as i32,
-                    },
-                    default_color: glyphon::Color::rgb(255, 255, 255),
-                    custom_glyphs: &[],
-                }],
-                &mut self.swash_cache,
-            ).unwrap();
+                &combined_ui_text_string,
+                glyphon::Attrs::new().family(glyphon::Family::SansSerif),
+                glyphon::Shaping::Advanced,
+            );
+            self.text_buffer
+                .shape_until_scroll(&mut self.font_system, true);
+
+            self.text_renderer
+                .prepare(
+                    &self.device,
+                    &self.queue,
+                    &mut self.font_system,
+                    &mut self.text_atlas,
+                    &self.viewport,
+                    [glyphon::TextArea {
+                        buffer: &self.text_buffer,
+                        left: 20.0,
+                        top: 20.0,
+                        scale: 1.0,
+                        bounds: glyphon::TextBounds {
+                            left: 0,
+                            top: 0,
+                            right: viewport_width as i32,
+                            bottom: viewport_height as i32,
+                        },
+                        default_color: glyphon::Color::rgb(255, 255, 255),
+                        custom_glyphs: &[],
+                    }],
+                    &mut self.swash_cache,
+                )
+                .unwrap();
 
             {
-                let mut text_rendering_pass = graphics_command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Text Overlay Rendering Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: target_texture_view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
+                let mut text_rendering_pass =
+                    graphics_command_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Text Overlay Rendering Pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: target_texture_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
 
-                self.text_renderer.render(&self.text_atlas, &self.viewport, &mut text_rendering_pass).unwrap();
+                self.text_renderer
+                    .render(&self.text_atlas, &self.viewport, &mut text_rendering_pass)
+                    .unwrap();
             }
         }
 

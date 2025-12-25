@@ -5,13 +5,13 @@
 //! for managing multiple loaded proteins
 
 use glam::Vec3;
-use pdbtbx::{PDB, ReadOptions, Format};
+use pdbtbx::{Format, ReadOptions, PDB};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use super::fetch::{fetch_pdb, load_file, FileFormat};
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// The available visual representation modes for a protein
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -74,7 +74,12 @@ pub struct ProteinData {
 
 impl ProteinData {
     /// Parses a protein structure from a string in the specified format
-    pub fn from_string(file_content_string: &str, name: &str, format: FileFormat, source: ProteinSource) -> Result<Self, String> {
+    pub fn from_string(
+        file_content_string: &str,
+        name: &str,
+        format: FileFormat,
+        source: ProteinSource,
+    ) -> Result<Self, String> {
         let target_file_format = match format {
             FileFormat::Pdb => Format::Pdb,
             FileFormat::Cif => Format::Mmcif,
@@ -83,11 +88,16 @@ impl ProteinData {
         let (pdb, parsing_warning_messages) = ReadOptions::default()
             .set_level(pdbtbx::StrictnessLevel::Loose)
             .set_format(target_file_format)
-            .read_raw(std::io::BufReader::new(std::io::Cursor::new(file_content_string.as_bytes())))
+            .read_raw(std::io::BufReader::new(std::io::Cursor::new(
+                file_content_string.as_bytes(),
+            )))
             .map_err(|pdb_parse_error| format!("Parse error: {:?}", pdb_parse_error))?;
 
         if !parsing_warning_messages.is_empty() {
-            eprintln!("Warnings while parsing {}: {:?}", name, parsing_warning_messages);
+            eprintln!(
+                "Warnings while parsing {}: {:?}",
+                name, parsing_warning_messages
+            );
         }
 
         Ok(Self {
@@ -120,7 +130,11 @@ impl ProteinData {
 
         for current_atom_reference in self.pdb.atoms() {
             let atom_coordinates_tuple = current_atom_reference.pos();
-            position_sum_vector += Vec3::new(atom_coordinates_tuple.0 as f32, atom_coordinates_tuple.1 as f32, atom_coordinates_tuple.2 as f32);
+            position_sum_vector += Vec3::new(
+                atom_coordinates_tuple.0 as f32,
+                atom_coordinates_tuple.1 as f32,
+                atom_coordinates_tuple.2 as f32,
+            );
             atom_counting_index += 1;
         }
 
@@ -138,7 +152,11 @@ impl ProteinData {
 
         for current_atom_reference in self.pdb.atoms() {
             let atom_coordinates_tuple = current_atom_reference.pos();
-            let atom_position_vector = Vec3::new(atom_coordinates_tuple.0 as f32, atom_coordinates_tuple.1 as f32, atom_coordinates_tuple.2 as f32);
+            let atom_position_vector = Vec3::new(
+                atom_coordinates_tuple.0 as f32,
+                atom_coordinates_tuple.1 as f32,
+                atom_coordinates_tuple.2 as f32,
+            );
             minimum_coordinate_bound = minimum_coordinate_bound.min(atom_position_vector);
             maximum_coordinate_bound = maximum_coordinate_bound.max(atom_position_vector);
         }
@@ -158,7 +176,11 @@ impl ProteinData {
                         if current_atom_reference.name() == "CA" {
                             let atom_coordinates_tuple = current_atom_reference.pos();
                             alpha_carbon_positions_and_chain_identifiers_collection.push((
-                                Vec3::new(atom_coordinates_tuple.0 as f32, atom_coordinates_tuple.1 as f32, atom_coordinates_tuple.2 as f32),
+                                Vec3::new(
+                                    atom_coordinates_tuple.0 as f32,
+                                    atom_coordinates_tuple.1 as f32,
+                                    atom_coordinates_tuple.2 as f32,
+                                ),
                                 chain_id_string.clone(),
                             ));
                         }
@@ -183,12 +205,25 @@ impl ProteinData {
                     for current_atom_reference in current_conformer_reference.atoms() {
                         if current_atom_reference.name() == "CA" {
                             let atom_coordinates_tuple = current_atom_reference.pos();
-                            let current_alpha_carbon_position = Vec3::new(atom_coordinates_tuple.0 as f32, atom_coordinates_tuple.1 as f32, atom_coordinates_tuple.2 as f32);
+                            let current_alpha_carbon_position = Vec3::new(
+                                atom_coordinates_tuple.0 as f32,
+                                atom_coordinates_tuple.1 as f32,
+                                atom_coordinates_tuple.2 as f32,
+                            );
 
-                            if let Some(previous_position_reference) = previous_alpha_carbon_position {
+                            if let Some(previous_position_reference) =
+                                previous_alpha_carbon_position
+                            {
                                 // Only connect if distance is reasonable (< 5 Angstroms)
-                                if previous_position_reference.distance(current_alpha_carbon_position) < 5.0 {
-                                    backbone_segment_collection.push((previous_position_reference, current_alpha_carbon_position, chain_id_string.clone()));
+                                if previous_position_reference
+                                    .distance(current_alpha_carbon_position)
+                                    < 5.0
+                                {
+                                    backbone_segment_collection.push((
+                                        previous_position_reference,
+                                        current_alpha_carbon_position,
+                                        chain_id_string.clone(),
+                                    ));
                                 }
                             }
                             previous_alpha_carbon_position = Some(current_alpha_carbon_position);
@@ -227,7 +262,11 @@ impl ProteinData {
                         if current_atom_reference.name() == "CA" {
                             let atom_coordinates_tuple = current_atom_reference.pos();
                             alpha_carbon_bfactor_collection.push((
-                                Vec3::new(atom_coordinates_tuple.0 as f32, atom_coordinates_tuple.1 as f32, atom_coordinates_tuple.2 as f32),
+                                Vec3::new(
+                                    atom_coordinates_tuple.0 as f32,
+                                    atom_coordinates_tuple.1 as f32,
+                                    atom_coordinates_tuple.2 as f32,
+                                ),
                                 chain_id_string.clone(),
                                 current_atom_reference.b_factor() as f32,
                             ));
@@ -241,7 +280,9 @@ impl ProteinData {
     }
 
     /// Returns Alpha Carbon (CA) atoms with their secondary structure and chain IDs
-    pub fn get_alpha_carbon_data_with_secondary_structure(&self) -> Vec<(Vec3, String, SecondaryStructureType)> {
+    pub fn get_alpha_carbon_data_with_secondary_structure(
+        &self,
+    ) -> Vec<(Vec3, String, SecondaryStructureType)> {
         let mut alpha_carbon_secondary_structure_collection = Vec::new();
 
         for current_chain_reference in self.pdb.chains() {
@@ -263,7 +304,11 @@ impl ProteinData {
                         if current_atom_reference.name() == "CA" {
                             let atom_coordinates_tuple = current_atom_reference.pos();
                             alpha_carbon_secondary_structure_collection.push((
-                                Vec3::new(atom_coordinates_tuple.0 as f32, atom_coordinates_tuple.1 as f32, atom_coordinates_tuple.2 as f32),
+                                Vec3::new(
+                                    atom_coordinates_tuple.0 as f32,
+                                    atom_coordinates_tuple.1 as f32,
+                                    atom_coordinates_tuple.2 as f32,
+                                ),
                                 chain_id_string.clone(),
                                 secondary_structure_type,
                             ));
@@ -277,12 +322,15 @@ impl ProteinData {
     }
 
     /// Returns backbone segments with secondary structure for line rendering
-    pub fn get_backbone_segments_with_secondary_structure(&self) -> Vec<(Vec3, Vec3, String, SecondaryStructureType)> {
+    pub fn get_backbone_segments_with_secondary_structure(
+        &self,
+    ) -> Vec<(Vec3, Vec3, String, SecondaryStructureType)> {
         let mut backbone_segment_collection = Vec::new();
 
         for current_chain_reference in self.pdb.chains() {
             let chain_id_string = current_chain_reference.id().to_string();
-            let mut previous_alpha_carbon_information: Option<(Vec3, SecondaryStructureType)> = None;
+            let mut previous_alpha_carbon_information: Option<(Vec3, SecondaryStructureType)> =
+                None;
 
             for current_residue_reference in current_chain_reference.residues() {
                 let residue_serial_number = current_residue_reference.serial_number();
@@ -298,14 +346,26 @@ impl ProteinData {
                     for current_atom_reference in current_conformer_reference.atoms() {
                         if current_atom_reference.name() == "CA" {
                             let atom_coordinates_tuple = current_atom_reference.pos();
-                            let current_alpha_carbon_position = Vec3::new(atom_coordinates_tuple.0 as f32, atom_coordinates_tuple.1 as f32, atom_coordinates_tuple.2 as f32);
+                            let current_alpha_carbon_position = Vec3::new(
+                                atom_coordinates_tuple.0 as f32,
+                                atom_coordinates_tuple.1 as f32,
+                                atom_coordinates_tuple.2 as f32,
+                            );
 
-                            if let Some((previous_position, _previous_secondary_structure)) = previous_alpha_carbon_information {
+                            if let Some((previous_position, _previous_secondary_structure)) =
+                                previous_alpha_carbon_information
+                            {
                                 if previous_position.distance(current_alpha_carbon_position) < 5.0 {
-                                    backbone_segment_collection.push((previous_position, current_alpha_carbon_position, chain_id_string.clone(), secondary_structure_type));
+                                    backbone_segment_collection.push((
+                                        previous_position,
+                                        current_alpha_carbon_position,
+                                        chain_id_string.clone(),
+                                        secondary_structure_type,
+                                    ));
                                 }
                             }
-                            previous_alpha_carbon_information = Some((current_alpha_carbon_position, secondary_structure_type));
+                            previous_alpha_carbon_information =
+                                Some((current_alpha_carbon_position, secondary_structure_type));
                         }
                     }
                 }
@@ -339,13 +399,14 @@ impl ProteinStore {
 
         let fetch_operation_result = fetch_pdb(&pdb_identifier_code)?;
         let parsed_protein_data = ProteinData::from_string(
-            &fetch_operation_result.content, 
-            &pdb_identifier_code, 
+            &fetch_operation_result.content,
+            &pdb_identifier_code,
             fetch_operation_result.format,
-            ProteinSource::Rcsb(pdb_identifier_code.clone())
+            ProteinSource::Rcsb(pdb_identifier_code.clone()),
         )?;
         let shared_protein_handle = Arc::new(RwLock::new(parsed_protein_data));
-        self.proteins.insert(pdb_identifier_code, shared_protein_handle.clone());
+        self.proteins
+            .insert(pdb_identifier_code, shared_protein_handle.clone());
         Ok(shared_protein_handle)
     }
 
@@ -363,13 +424,14 @@ impl ProteinStore {
 
         let load_operation_result = load_file(file_system_path)?;
         let parsed_protein_data = ProteinData::from_string(
-            &load_operation_result.content, 
-            &extracted_protein_name, 
+            &load_operation_result.content,
+            &extracted_protein_name,
             load_operation_result.format,
-            ProteinSource::File(file_system_path.to_string())
+            ProteinSource::File(file_system_path.to_string()),
         )?;
         let shared_protein_handle = Arc::new(RwLock::new(parsed_protein_data));
-        self.proteins.insert(extracted_protein_name, shared_protein_handle.clone());
+        self.proteins
+            .insert(extracted_protein_name, shared_protein_handle.clone());
         Ok(shared_protein_handle)
     }
 

@@ -3,8 +3,8 @@
 //! This module provides a spherical coordinate camera system that supports
 //! orbiting, zooming, and focusing on specific points in 3D space
 
-use glam::{Mat4, Vec3, Vec2};
-use serde::{Serialize, Deserialize};
+use glam::{Mat4, Vec2, Vec3};
+use serde::{Deserialize, Serialize};
 
 /// A 3D camera using spherical coordinates
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -88,14 +88,26 @@ impl Camera {
     }
 
     /// Generates a ray in world space from screen coordinates
-    pub fn ray_from_screen(&self, screen_coordinates: Vec2, screen_dimensions: Vec2) -> (Vec3, Vec3) {
+    pub fn ray_from_screen(
+        &self,
+        screen_coordinates: Vec2,
+        screen_dimensions: Vec2,
+    ) -> (Vec3, Vec3) {
         let normalized_device_coordinates = Vec2::new(
             (2.0 * screen_coordinates.x / screen_dimensions.x) - 1.0,
             1.0 - (2.0 * screen_coordinates.y / screen_dimensions.y),
         );
         let inverse_view_projection_matrix = self.view_projection_matrix().inverse();
-        let near_plane_world_point = inverse_view_projection_matrix.project_point3(Vec3::new(normalized_device_coordinates.x, normalized_device_coordinates.y, -1.0));
-        let far_plane_world_point = inverse_view_projection_matrix.project_point3(Vec3::new(normalized_device_coordinates.x, normalized_device_coordinates.y, 1.0));
+        let near_plane_world_point = inverse_view_projection_matrix.project_point3(Vec3::new(
+            normalized_device_coordinates.x,
+            normalized_device_coordinates.y,
+            -1.0,
+        ));
+        let far_plane_world_point = inverse_view_projection_matrix.project_point3(Vec3::new(
+            normalized_device_coordinates.x,
+            normalized_device_coordinates.y,
+            1.0,
+        ));
         let ray_direction_vector = (far_plane_world_point - near_plane_world_point).normalize();
         (near_plane_world_point, ray_direction_vector)
     }
