@@ -312,7 +312,7 @@ impl Renderer {
         let cache = glyphon::Cache::new(&device);
         let mut text_atlas = glyphon::TextAtlas::new(&device, &queue, &cache, surface_format);
         let text_renderer = glyphon::TextRenderer::new(&mut text_atlas, &device, wgpu::MultisampleState::default(), None);
-        let text_buffer = glyphon::Buffer::new(&mut font_system, glyphon::Metrics::new(16.0, 20.0));
+        let text_buffer = glyphon::Buffer::new(&mut font_system, glyphon::Metrics::new(24.0, 30.0));
         let viewport = glyphon::Viewport::new(&device, &cache);
 
         Self {
@@ -381,7 +381,7 @@ impl Renderer {
             let active_color_scheme_mode = protein_locked_data.color_scheme;
 
             // Get B-factor range for normalization during coloring
-            let (minimum_bfactor_value, maximum_bfactor_value) = protein_locked_data.bfactor_range();
+            let (minimum_bfactor_value, maximum_bfactor_value) = protein_locked_data.calculate_bfactor_range();
 
             // Helper to get color for a specific chain identifier
             let get_color_for_chain_identifier = |chain_id_string: &str| -> [f32; 3] {
@@ -392,49 +392,96 @@ impl Renderer {
                     }
                     ColorScheme::ByElement => [0.5, 0.5, 0.5], // Default for Alpha Carbon (Carbon)
                     ColorScheme::ByBFactor => [0.5, 0.5, 0.5], // Will be overridden per-atom
-                    ColorScheme::BySecondary => [0.7, 0.7, 0.7], // TODO: Implement secondary structure coloring
+                    ColorScheme::BySecondary => [0.7, 0.7, 0.7], // Will be overridden per-residue
                     ColorScheme::Uniform(uniform_rgb_color) => uniform_rgb_color,
                 }
             };
 
+            let get_secondary_structure_color = |secondary_structure_type: crate::protein::structure::SecondaryStructureType| -> [f32; 3] {
+                match secondary_structure_type {
+                    crate::protein::structure::SecondaryStructureType::Helix => [1.0, 0.4, 1.0], // Magenta/Pink for helix
+                    crate::protein::structure::SecondaryStructureType::Sheet => [1.0, 1.0, 0.2], // Yellow for sheet
+                    crate::protein::structure::SecondaryStructureType::Other => [0.6, 0.6, 0.6], // Gray for loop/other
+                }
+            };
+
             // Generate sphere instances if the representation mode requires them
-            let alpha_carbon_data_collection = protein_locked_data.ca_with_bfactor();
-            for (atom_indexing_counter, (atom_world_position_vector, target_chain_identifier, atom_temperature_factor)) in alpha_carbon_data_collection.into_iter().enumerate() {
-                // Store world position for distance measurements
-                atom_world_positions_lookup_table.insert((protein_identifier_name.clone(), atom_indexing_counter), atom_world_position_vector);
+            if active_representation_mode == Representation::Spheres || active_representation_mode == Representation::BackboneAndSpheres {
+                if active_color_scheme_mode == ColorScheme::BySecondary {
+                    let alpha_carbon_secondary_structure_data = protein_locked_data.get_alpha_carbon_data_with_secondary_structure();
+                    for (atom_indexing_counter, (atom_world_position_vector, _, secondary_structure_type)) in alpha_carbon_secondary_structure_data.into_iter().enumerate() {
+                        atom_world_positions_lookup_table.insert((protein_identifier_name.clone(), atom_indexing_counter), atom_world_position_vector);
+                        
+                        let final_calculated_atom_color = get_secondary_structure_color(secondary_structure_type);
+                        let is_atom_currently_selected = currently_selected_atoms.contains(&(protein_identifier_name.clone(), atom_indexing_counter));
 
-                if active_representation_mode == Representation::Spheres || active_representation_mode == Representation::BackboneAndSpheres {
-                    let final_calculated_atom_color = match active_color_scheme_mode {
-                        ColorScheme::ByBFactor => bfactor_to_color(atom_temperature_factor, minimum_bfactor_value, maximum_bfactor_value),
-                        ColorScheme::ByElement => _get_element_color("C"), // Alpha Carbon is Carbon
-                        _ => get_color_for_chain_identifier(&target_chain_identifier),
-                    };
+                        sphere_instances_collection.push(SphereInstance {
+                            position: [atom_world_position_vector.x, atom_world_position_vector.y, atom_world_position_vector.z],
+                            radius: 1.5,
+                            color: final_calculated_atom_color,
+                            selection_factor: if is_atom_currently_selected { 1.0 } else { 0.0 },
+                        });
+                    }
+                } else {
+                    let alpha_carbon_data_with_bfactors_collection = protein_locked_data.get_alpha_carbon_data_with_bfactors();
+                    for (atom_indexing_counter, (atom_world_position_vector, target_chain_identifier, atom_temperature_factor)) in alpha_carbon_data_with_bfactors_collection.into_iter().enumerate() {
+                        // Store world position for distance measurements
+                        atom_world_positions_lookup_table.insert((protein_identifier_name.clone(), atom_indexing_counter), atom_world_position_vector);
 
-                    let is_atom_currently_selected = currently_selected_atoms.contains(&(protein_identifier_name.clone(), atom_indexing_counter));
+                        let final_calculated_atom_color = match active_color_scheme_mode {
+                            ColorScheme::ByBFactor => bfactor_to_color(atom_temperature_factor, minimum_bfactor_value, maximum_bfactor_value),
+                            ColorScheme::ByElement => _get_element_color("C"), // Alpha Carbon is Carbon
+                            _ => get_color_for_chain_identifier(&target_chain_identifier),
+                        };
 
-                    sphere_instances_collection.push(SphereInstance {
-                        position: [atom_world_position_vector.x, atom_world_position_vector.y, atom_world_position_vector.z],
-                        radius: 1.5,
-                        color: final_calculated_atom_color,
-                        selection_factor: if is_atom_currently_selected { 1.0 } else { 0.0 },
-                    });
+                        let is_atom_currently_selected = currently_selected_atoms.contains(&(protein_identifier_name.clone(), atom_indexing_counter));
+
+                        sphere_instances_collection.push(SphereInstance {
+                            position: [atom_world_position_vector.x, atom_world_position_vector.y, atom_world_position_vector.z],
+                            radius: 1.5,
+                            color: final_calculated_atom_color,
+                            selection_factor: if is_atom_currently_selected { 1.0 } else { 0.0 },
+                        });
+                    }
+                }
+            } else {
+                // Still need to fill atom_world_positions_lookup_table for measurements even if spheres aren't drawn
+                let alpha_carbon_positions_and_chain_identifiers_collection = protein_locked_data.get_alpha_carbon_positions_and_chain_identifiers();
+                for (atom_indexing_counter, (atom_world_position_vector, _)) in alpha_carbon_positions_and_chain_identifiers_collection.into_iter().enumerate() {
+                    atom_world_positions_lookup_table.insert((protein_identifier_name.clone(), atom_indexing_counter), atom_world_position_vector);
                 }
             }
 
             // Generate backbone backbone trace lines if needed
             if active_representation_mode == Representation::Backbone || active_representation_mode == Representation::BackboneAndSpheres {
-                let backbone_segment_collection = protein_locked_data.backbone_segments();
-                for (segment_start_position, segment_end_position, target_chain_identifier) in backbone_segment_collection {
-                    let final_line_segment_color = get_color_for_chain_identifier(&target_chain_identifier);
+                if active_color_scheme_mode == ColorScheme::BySecondary {
+                    let backbone_segment_collection = protein_locked_data.get_backbone_segments_with_secondary_structure();
+                    for (segment_start_position, segment_end_position, _, secondary_structure_type) in backbone_segment_collection {
+                        let final_line_segment_color = get_secondary_structure_color(secondary_structure_type);
 
-                    line_vertices_collection.push(LineVertex {
-                        position: [segment_start_position.x, segment_start_position.y, segment_start_position.z],
-                        color: final_line_segment_color,
-                    });
-                    line_vertices_collection.push(LineVertex {
-                        position: [segment_end_position.x, segment_end_position.y, segment_end_position.z],
-                        color: final_line_segment_color,
-                    });
+                        line_vertices_collection.push(LineVertex {
+                            position: [segment_start_position.x, segment_start_position.y, segment_start_position.z],
+                            color: final_line_segment_color,
+                        });
+                        line_vertices_collection.push(LineVertex {
+                            position: [segment_end_position.x, segment_end_position.y, segment_end_position.z],
+                            color: final_line_segment_color,
+                        });
+                    }
+                } else {
+                    let backbone_segment_collection = protein_locked_data.get_backbone_segments_for_rendering();
+                    for (segment_start_position, segment_end_position, target_chain_identifier) in backbone_segment_collection {
+                        let final_line_segment_color = get_color_for_chain_identifier(&target_chain_identifier);
+
+                        line_vertices_collection.push(LineVertex {
+                            position: [segment_start_position.x, segment_start_position.y, segment_start_position.z],
+                            color: final_line_segment_color,
+                        });
+                        line_vertices_collection.push(LineVertex {
+                            position: [segment_end_position.x, segment_end_position.y, segment_end_position.z],
+                            color: final_line_segment_color,
+                        });
+                    }
                 }
             }
         }

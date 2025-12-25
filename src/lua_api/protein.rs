@@ -59,13 +59,13 @@ impl UserData for LuaProtein {
         // p:ca_count() returns the number of Alpha Carbon (CA) atoms
         methods.add_method("ca_count", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
-            Ok(locked_protein_data.ca_positions().len())
+            Ok(locked_protein_data.get_alpha_carbon_positions_and_chain_identifiers().len())
         });
 
         // p:residue_count() returns an approximate count of residues based on CA atoms
         methods.add_method("residue_count", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
-            Ok(locked_protein_data.ca_positions().len())
+            Ok(locked_protein_data.get_alpha_carbon_positions_and_chain_identifiers().len())
         });
 
         // p:show() and p:hide() control whether the protein is rendered
@@ -91,7 +91,7 @@ impl UserData for LuaProtein {
                 locked_protein_data.name,
                 locked_protein_data.atom_count(),
                 locked_protein_data.chain_ids(),
-                locked_protein_data.ca_positions().len(),
+                locked_protein_data.get_alpha_carbon_positions_and_chain_identifiers().len(),
                 bounding_box_dimensions.x,
                 bounding_box_dimensions.y,
                 bounding_box_dimensions.z

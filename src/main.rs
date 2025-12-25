@@ -7,6 +7,7 @@ mod lua_api;
 mod protein;
 mod renderer;
 
+use clap::Parser;
 use notify::Watcher;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -20,6 +21,14 @@ use winit::{
 use lua_api::ScriptEngine;
 use protein::{ProteinStore, Representation, ColorScheme};
 use renderer::{Camera, Renderer};
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Path to the initial Lua script to run
+    #[arg(short, long)]
+    script: Option<String>,
+}
 
 /// The main application state
 struct App {
@@ -58,7 +67,7 @@ struct App {
 
 impl App {
     /// Initializes a new instance of the application
-    async fn new(main_window: Arc<winit::window::Window>) -> Self {
+    async fn new(main_window: Arc<winit::window::Window>, initial_script: Option<String>) -> Self {
         let window_inner_size = main_window.inner_size();
         let wgpu_instance = wgpu::Instance::default();
         let rendering_surface = wgpu_instance.create_surface(main_window.clone()).unwrap();
@@ -138,13 +147,9 @@ impl App {
             notify::RecursiveMode::NonRecursive,
         );
 
-        // Run initial script
-        if std::path::Path::new("scripts/init.lua").exists() {
-            if let Err(script_error_message) = lua_script_engine.run_file("scripts/init.lua") {
-                eprintln!("Script error: {}", script_error_message);
-            }
-        } else if std::path::Path::new("init.lua").exists() {
-            if let Err(script_error_message) = lua_script_engine.run_file("init.lua") {
+        // Run initial script if provided
+        if let Some(script_path) = initial_script {
+            if let Err(script_error_message) = lua_script_engine.run_file(&script_path) {
                 eprintln!("Script error: {}", script_error_message);
             }
         }
@@ -230,8 +235,8 @@ impl App {
             let mut global_atom_positions_lookup_table = std::collections::HashMap::new();
             for protein_shared_handle in locked_protein_store.iter() {
                 let protein_locked_data = protein_shared_handle.read().unwrap();
-                let alpha_carbon_positions_collection = protein_locked_data.ca_positions();
-                for (atom_indexing_counter, (atom_world_position, _chain_identifier)) in alpha_carbon_positions_collection.into_iter().enumerate() {
+                let alpha_carbon_positions_and_chain_identifiers_collection = protein_locked_data.get_alpha_carbon_positions_and_chain_identifiers();
+                for (atom_indexing_counter, (atom_world_position, _chain_identifier)) in alpha_carbon_positions_and_chain_identifiers_collection.into_iter().enumerate() {
                     global_atom_positions_lookup_table.insert((protein_locked_data.name.clone(), atom_indexing_counter), atom_world_position);
                 }
             }
@@ -299,8 +304,8 @@ impl App {
                         let protein_identifier_name = protein_locked_data.name.clone();
                         
                         // Check Alpha Carbon (CA) atoms for intersection
-                        let alpha_carbon_positions_collection = protein_locked_data.ca_positions();
-                        for (atom_indexing_counter, (atom_world_position, _chain_identifier)) in alpha_carbon_positions_collection.into_iter().enumerate() {
+                        let alpha_carbon_positions_and_chain_identifiers_collection = protein_locked_data.get_alpha_carbon_positions_and_chain_identifiers();
+                        for (atom_indexing_counter, (atom_world_position, _chain_identifier)) in alpha_carbon_positions_and_chain_identifiers_collection.into_iter().enumerate() {
                             let sphere_intersection_radius = 1.5; // Same radius as used in the renderer
                             let vector_from_ray_origin_to_atom_center = ray_origin_point - atom_world_position;
                             let quadratic_coefficient_b = vector_from_ray_origin_to_atom_center.dot(ray_direction_unit_vector);
@@ -322,13 +327,6 @@ impl App {
                         let target_atom_selection_identifier = (hit_protein_name, hit_atom_index);
                         if !self.selected_atoms.contains(&target_atom_selection_identifier) {
                             self.selected_atoms.push(target_atom_selection_identifier);
-                            
-                            // Distance measurement: if we have at least 2 selected atoms, measure the last two added
-                            if self.selected_atoms.len() >= 2 {
-                                let second_atom_selection_index = self.selected_atoms.len() - 1;
-                                let first_atom_selection_index = self.selected_atoms.len() - 2;
-                                self.measurements.push((first_atom_selection_index, second_atom_selection_index));
-                            }
                         }
                     }
                 }
@@ -361,7 +359,9 @@ impl App {
     fn handle_key(&mut self, pressed_physical_keycode: KeyCode) {
         match pressed_physical_keycode {
             KeyCode::KeyR => {
-                // Reset camera
+                // Reset camera and selection
+                self.selected_atoms.clear();
+                self.measurements.clear();
                 let mut camera = self.camera.write().unwrap();
                 *camera = Camera::new(self.config.width as f32 / self.config.height as f32);
                 let locked_protein_store = self.store.read().unwrap();
@@ -397,6 +397,17 @@ impl App {
             KeyCode::KeyE => {
                 self.set_all_color_scheme(ColorScheme::ByElement);
             }
+            KeyCode::KeyS => {
+                self.set_all_color_scheme(ColorScheme::BySecondary);
+            }
+            KeyCode::KeyM => {
+                // Calculate distance between the last two selected atoms
+                if self.selected_atoms.len() >= 2 {
+                    let second_atom_selection_index = self.selected_atoms.len() - 1;
+                    let first_atom_selection_index = self.selected_atoms.len() - 2;
+                    self.measurements.push((first_atom_selection_index, second_atom_selection_index));
+                }
+            }
             KeyCode::Escape => {
                 std::process::exit(0);
             }
@@ -426,7 +437,7 @@ impl App {
 
 
 /// The main application event loop
-async fn run() {
+async fn run(initial_script: Option<String>) {
     let main_event_loop = EventLoop::new().unwrap();
     let application_window = Arc::new(
         WindowBuilder::new()
@@ -436,7 +447,7 @@ async fn run() {
             .unwrap(),
     );
 
-    let mut application_state = App::new(application_window.clone()).await;
+    let mut application_state = App::new(application_window.clone(), initial_script).await;
 
     main_event_loop.set_control_flow(ControlFlow::Poll);
     let _ = main_event_loop.run(move |winit_event, event_loop_window_target| match winit_event {
@@ -486,5 +497,6 @@ async fn run() {
 
 /// Application entry point
 fn main() {
-    pollster::block_on(run());
+    let args = Args::parse();
+    pollster::block_on(run(args.script));
 }

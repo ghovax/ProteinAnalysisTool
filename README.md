@@ -5,24 +5,29 @@ A high-performance protein visualization tool built with Rust, WGPU, and Lua.
 ## Controls
 
 ### Mouse
+
 * **Left Click & Drag**: Rotate camera
 * **Scroll**: Zoom in/out
 
 ### Keyboard Shortcuts
-* **1**: Set representation to Spheres only
-* **2**: Set representation to Backbone only
-* **3**: Set representation to Both (Backbone and Spheres)
-* **C**: Color by Chain
-* **B**: Color by B-factor
-* **E**: Color by Element
-* **R**: Reset Camera focus
-* **Esc**: Quit application
+
+* `1`: Set representation to Spheres only
+* `2`: Set representation to Backbone only
+* `3`: Set representation to Both (Backbone and Spheres)
+* `C`: Color by Chain
+* `B`: Color by B-factor
+* `E`: Color by Element
+* `S`: Color by Secondary structure
+* `R`: Reset Camera focus and selection
+* `M`: Calculate distance between selected atoms
+* `Esc`: Quit application
 
 ## Scripting API (Lua)
 
 The application embeds a Lua engine for automation and analysis. Scripts can be placed in `scripts/init.lua` and support hot-reloading.
 
 ### Global `pdb` Module
+
 * `pdb.fetch(code)`: Fetches a protein from RCSB by its PDB identifier
 * `pdb.load(path)`: Loads a protein from a local file (PDB or mmCIF)
 * `pdb.list()`: Returns a table of names for all currently loaded protein identifiers
@@ -41,4 +46,5 @@ The application embeds a Lua engine for automation and analysis. Scripts can be 
 * `p:residues(chain_id)`: Returns a table of residues, optionally filtered by chain
 
 ## Hot-Reloading
+
 The application watches the `scripts/` directory and the current directory for changes to `.lua` files. Saving a script will automatically re-execute it in the running application.

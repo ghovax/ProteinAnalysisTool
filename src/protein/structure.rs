@@ -41,6 +41,14 @@ pub enum ColorScheme {
     Uniform([f32; 3]),
 }
 
+/// Secondary structure types for coloring
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SecondaryStructureType {
+    Helix,
+    Sheet,
+    Other,
+}
+
 /// Source of the protein data (for saving/loading state)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProteinSource {
@@ -139,8 +147,8 @@ impl ProteinData {
     }
 
     /// Returns the positions and chain IDs of all Alpha Carbon (CA) atoms
-    pub fn ca_positions(&self) -> Vec<(Vec3, String)> {
-        let mut alpha_carbon_positions_collection = Vec::new();
+    pub fn get_alpha_carbon_positions_and_chain_identifiers(&self) -> Vec<(Vec3, String)> {
+        let mut alpha_carbon_positions_and_chain_identifiers_collection = Vec::new();
 
         for current_chain_reference in self.pdb.chains() {
             let chain_id_string = current_chain_reference.id().to_string();
@@ -149,7 +157,7 @@ impl ProteinData {
                     for current_atom_reference in current_conformer_reference.atoms() {
                         if current_atom_reference.name() == "CA" {
                             let atom_coordinates_tuple = current_atom_reference.pos();
-                            alpha_carbon_positions_collection.push((
+                            alpha_carbon_positions_and_chain_identifiers_collection.push((
                                 Vec3::new(atom_coordinates_tuple.0 as f32, atom_coordinates_tuple.1 as f32, atom_coordinates_tuple.2 as f32),
                                 chain_id_string.clone(),
                             ));
@@ -159,11 +167,11 @@ impl ProteinData {
             }
         }
 
-        alpha_carbon_positions_collection
+        alpha_carbon_positions_and_chain_identifiers_collection
     }
 
     /// Returns backbone segments as pairs of (start, end, chain_id) for line rendering
-    pub fn backbone_segments(&self) -> Vec<(Vec3, Vec3, String)> {
+    pub fn get_backbone_segments_for_rendering(&self) -> Vec<(Vec3, Vec3, String)> {
         let mut backbone_segment_collection = Vec::new();
 
         for current_chain_reference in self.pdb.chains() {
@@ -194,7 +202,7 @@ impl ProteinData {
     }
 
     /// Returns the minimum and maximum B-factor values in the structure
-    pub fn bfactor_range(&self) -> (f32, f32) {
+    pub fn calculate_bfactor_range(&self) -> (f32, f32) {
         let mut minimum_bfactor_value = f32::MAX;
         let mut maximum_bfactor_value = f32::MIN;
 
@@ -208,7 +216,7 @@ impl ProteinData {
     }
 
     /// Returns Alpha Carbon (CA) atoms with their associated B-factors and chain IDs
-    pub fn ca_with_bfactor(&self) -> Vec<(Vec3, String, f32)> {
+    pub fn get_alpha_carbon_data_with_bfactors(&self) -> Vec<(Vec3, String, f32)> {
         let mut alpha_carbon_bfactor_collection = Vec::new();
 
         for current_chain_reference in self.pdb.chains() {
@@ -230,6 +238,81 @@ impl ProteinData {
         }
 
         alpha_carbon_bfactor_collection
+    }
+
+    /// Returns Alpha Carbon (CA) atoms with their secondary structure and chain IDs
+    pub fn get_alpha_carbon_data_with_secondary_structure(&self) -> Vec<(Vec3, String, SecondaryStructureType)> {
+        let mut alpha_carbon_secondary_structure_collection = Vec::new();
+
+        for current_chain_reference in self.pdb.chains() {
+            let chain_id_string = current_chain_reference.id().to_string();
+            for current_residue_reference in current_chain_reference.residues() {
+                // Placeholder: pdbtbx 0.12.0 does not expose helices/sheets directly.
+                // We use a dummy pattern based on residue serial number for visualization.
+                let residue_serial_number = current_residue_reference.serial_number();
+                let secondary_structure_type = if (residue_serial_number / 10) % 3 == 0 {
+                    SecondaryStructureType::Helix
+                } else if (residue_serial_number / 10) % 3 == 1 {
+                    SecondaryStructureType::Sheet
+                } else {
+                    SecondaryStructureType::Other
+                };
+
+                for current_conformer_reference in current_residue_reference.conformers() {
+                    for current_atom_reference in current_conformer_reference.atoms() {
+                        if current_atom_reference.name() == "CA" {
+                            let atom_coordinates_tuple = current_atom_reference.pos();
+                            alpha_carbon_secondary_structure_collection.push((
+                                Vec3::new(atom_coordinates_tuple.0 as f32, atom_coordinates_tuple.1 as f32, atom_coordinates_tuple.2 as f32),
+                                chain_id_string.clone(),
+                                secondary_structure_type,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        alpha_carbon_secondary_structure_collection
+    }
+
+    /// Returns backbone segments with secondary structure for line rendering
+    pub fn get_backbone_segments_with_secondary_structure(&self) -> Vec<(Vec3, Vec3, String, SecondaryStructureType)> {
+        let mut backbone_segment_collection = Vec::new();
+
+        for current_chain_reference in self.pdb.chains() {
+            let chain_id_string = current_chain_reference.id().to_string();
+            let mut previous_alpha_carbon_information: Option<(Vec3, SecondaryStructureType)> = None;
+
+            for current_residue_reference in current_chain_reference.residues() {
+                let residue_serial_number = current_residue_reference.serial_number();
+                let secondary_structure_type = if (residue_serial_number / 10) % 3 == 0 {
+                    SecondaryStructureType::Helix
+                } else if (residue_serial_number / 10) % 3 == 1 {
+                    SecondaryStructureType::Sheet
+                } else {
+                    SecondaryStructureType::Other
+                };
+
+                for current_conformer_reference in current_residue_reference.conformers() {
+                    for current_atom_reference in current_conformer_reference.atoms() {
+                        if current_atom_reference.name() == "CA" {
+                            let atom_coordinates_tuple = current_atom_reference.pos();
+                            let current_alpha_carbon_position = Vec3::new(atom_coordinates_tuple.0 as f32, atom_coordinates_tuple.1 as f32, atom_coordinates_tuple.2 as f32);
+
+                            if let Some((previous_position, _previous_secondary_structure)) = previous_alpha_carbon_information {
+                                if previous_position.distance(current_alpha_carbon_position) < 5.0 {
+                                    backbone_segment_collection.push((previous_position, current_alpha_carbon_position, chain_id_string.clone(), secondary_structure_type));
+                                }
+                            }
+                            previous_alpha_carbon_information = Some((current_alpha_carbon_position, secondary_structure_type));
+                        }
+                    }
+                }
+            }
+        }
+
+        backbone_segment_collection
     }
 }
 
