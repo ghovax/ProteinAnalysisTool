@@ -22,4 +22,6 @@ clap = { version = "4.5.53", features = ["derive"] }
 nalgebra = "0.32"
 rstar = "0.12"
 log = "0.4"
-env_logger = "0.11"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-log = "0.2"

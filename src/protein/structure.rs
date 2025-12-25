@@ -8,7 +8,7 @@ use glam::Vec3;
 use pdbtbx::{Format, ReadOptions, PDB, ContainsAtomConformer, ContainsAtomConformerResidue, ContainsAtomConformerResidueChain};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use log::warn;
+use tracing::warn;
 
 use super::fetch_rcsb::{fetch_pdb, load_file, FileFormat};
 use crate::selection::SelectionSet;

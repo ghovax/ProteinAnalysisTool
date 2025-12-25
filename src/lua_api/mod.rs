@@ -8,7 +8,7 @@ mod selection;
 
 use mlua::{Lua, Result};
 use std::sync::{Arc, RwLock};
-use log::info;
+use tracing::{info, info_span};
 
 use crate::protein::ProteinStore;
 
@@ -280,7 +280,7 @@ impl ScriptEngine {
                             _ => format!("{:?}", argument_value),
                         })
                         .collect();
-                    info!("[Lua] {}", formatted_output_strings.join("\t"));
+                    info!("{}", formatted_output_strings.join("\t"));
                     Ok(())
                 },
             )?,
@@ -293,11 +293,15 @@ impl ScriptEngine {
 
     /// Executes a string as Lua code
     pub fn run_script(&self, lua_code_string: &str) -> Result<()> {
+        let span = info_span!("lua");
+        let _enter = span.enter();
         self.lua.load(lua_code_string).exec()
     }
 
     /// Reads a file and executes its content as Lua code
     pub fn run_file(&self, lua_file_path: &str) -> Result<()> {
+        let span = info_span!("lua", script = lua_file_path);
+        let _enter = span.enter();
         match std::fs::read_to_string(lua_file_path) {
             Ok(loaded_lua_code_string) => self.run_script(&loaded_lua_code_string),
             Err(file_read_error_message) => Err(mlua::Error::RuntimeError(format!(

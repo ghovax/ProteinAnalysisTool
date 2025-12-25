@@ -58,7 +58,7 @@ local ramachandran_analysis_data = reference_protein:ramachandran_data()
 if #ramachandran_analysis_data > 0 then
     local first_residue_entry = ramachandran_analysis_data[1]
     print("Analysis for residue: index " .. first_residue_entry.residue_number)
-    print("       Phi: " .. string.format("%.2f", first_residue_entry.phi) .. "°, Psi: " .. string.format("%.2f", first_residue_entry.psi) .. "°")
+    print("Resulting residue's angles: Phi: " .. string.format("%.2f", first_residue_entry.phi) .. "°, Psi: " .. string.format("%.2f", first_residue_entry.psi) .. "°")
 end
 
 -- 8. Camera and Session Control

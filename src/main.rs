@@ -26,7 +26,7 @@ use winit::{
 use lua_api::{ScriptEngine, ScriptEvent};
 use protein::{ColorScheme, ProteinStore, Representation};
 use renderer::{Camera, Renderer};
-use log::{info, error};
+use tracing::{info, error};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -711,8 +711,18 @@ async fn run(initial_script: Option<String>) {
 fn main() {
     let application_arguments = Args::parse();
 
-    // Initialize the standardized logging system
-    env_logger::init();
+    // Initialize the standardized logging system with tracing
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::builder()
+                .with_default_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+                .from_env_lossy()
+                .add_directive("wgpu_core=warn".parse().unwrap())
+                .add_directive("wgpu_hal=warn".parse().unwrap())
+                .add_directive("naga=warn".parse().unwrap()),
+        )
+        .init();
 
     pollster::block_on(run(application_arguments.script));
 }
