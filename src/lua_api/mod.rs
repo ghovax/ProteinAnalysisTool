@@ -197,27 +197,27 @@ impl ScriptEngine {
 
                     let representation_mode_string = match locked_protein_data.representation {
                         crate::protein::structure::Representation::Spheres => "spheres",
-                        crate::protein::structure::Representation::Backbone => "backbone",
-                        crate::protein::structure::Representation::BackboneAndSpheres => "both",
+                        crate::protein::structure::Representation::Backbone => "backbone_trace",
+                        crate::protein::structure::Representation::BackboneAndSpheres => "backbone_and_spheres",
                         crate::protein::structure::Representation::Sticks => "sticks",
-                        crate::protein::structure::Representation::BallAndStick => "ball-and-stick",
-                        crate::protein::structure::Representation::SpaceFilling => "space-filling",
+                        crate::protein::structure::Representation::BallAndStick => "ball_and_stick",
+                        crate::protein::structure::Representation::SpaceFilling => "space_filling",
                         crate::protein::structure::Representation::Lines => "lines",
                     };
                     writeln!(session_output_file, "{}:set_representation_mode(\"{}\")", lua_protein_variable_name, representation_mode_string).unwrap();
 
                     match locked_protein_data.color_scheme {
                         crate::protein::structure::ColorScheme::ByChain => {
-                            writeln!(session_output_file, "{}:set_color_scheme_by_property(\"chain\")", lua_protein_variable_name).unwrap()
+                            writeln!(session_output_file, "{}:set_color_scheme_by_property(\"chain_identifier\")", lua_protein_variable_name).unwrap()
                         }
                         crate::protein::structure::ColorScheme::ByElement => {
-                            writeln!(session_output_file, "{}:set_color_scheme_by_property(\"element\")", lua_protein_variable_name).unwrap()
+                            writeln!(session_output_file, "{}:set_color_scheme_by_property(\"chemical_element\")", lua_protein_variable_name).unwrap()
                         }
                         crate::protein::structure::ColorScheme::ByBFactor => {
-                            writeln!(session_output_file, "{}:set_color_scheme_by_property(\"bfactor\")", lua_protein_variable_name).unwrap()
+                            writeln!(session_output_file, "{}:set_color_scheme_by_property(\"bfactor_value\")", lua_protein_variable_name).unwrap()
                         }
                         crate::protein::structure::ColorScheme::BySecondary => {
-                            writeln!(session_output_file, "{}:set_color_scheme_by_property(\"secondary\")", lua_protein_variable_name).unwrap()
+                            writeln!(session_output_file, "{}:set_color_scheme_by_property(\"secondary_structure\")", lua_protein_variable_name).unwrap()
                         }
                         crate::protein::structure::ColorScheme::Uniform(rgb_color_components) => {
                             writeln!(session_output_file, "{}:set_uniform_rgb_color({}, {}, {})", lua_protein_variable_name, rgb_color_components[0], rgb_color_components[1], rgb_color_components[2])

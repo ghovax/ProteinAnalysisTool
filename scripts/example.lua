@@ -3,17 +3,17 @@
 -- 1. Fetching proteins for superposition comparison
 -- Using two similar structures of Ubiquitin (1UBQ and 1YYF)
 -- 1YYF is an NMR structure with multiple models, 1UBQ is a single model.
-local reference_protein = pdb.fetch("1YYF")
-local moving_protein = pdb.fetch("1YYF")
-pdb.fetch("1UBQ")
-pdb.fetch("9B1Z")
+local reference_protein = pdb.fetch_protein_from_rcsb("1YYF")
+local moving_protein = pdb.fetch_protein_from_rcsb("1YYF")
+pdb.fetch_protein_from_rcsb("1UBQ")
+pdb.fetch_protein_from_rcsb("9P9K")
 
 -- 2. Setting up initial visual representations
-reference_protein:set_representation_mode("ball-and-stick")
-reference_protein:set_color_scheme_by_property("bfactor") -- Color by B-factor
+reference_protein:set_representation_mode("ball_and_stick")
+reference_protein:set_color_scheme_by_property("bfactor_value") -- Color by B-factor
 
 moving_protein:set_representation_mode("sticks")
-moving_protein:set_color_scheme_by_property("secondary") -- Color by Helix/Sheet/Loop
+moving_protein:set_color_scheme_by_property("secondary_structure") -- Color by Helix/Sheet/Loop
 
 -- 3. Testing RMSD and Kabsch Superposition with Selections
 -- We select only Model 1 and Alpha Carbons to ensure identical length (76 atoms)
@@ -100,5 +100,5 @@ local fasta_data = reference_protein:generate_fasta_formatted_sequence()
 print("Generated FASTA header: " .. fasta_data:sub(1, 20) .. "...")
 
 -- 9. Camera and Session Control
-camera.set_target(0.0, 0.0, 0.0)
-camera.set_params(75.0, 0.8, 0.4)
+camera.set_camera_focus_target(0.0, 0.0, 0.0)
+camera.set_camera_spherical_parameters(75.0, 0.8, 0.4)

@@ -315,33 +315,32 @@ impl UserData for LuaProtein {
             Ok(rmsf_results_table)
         });
 
-        // protein:set_representation_mode(mode) sets the representation mode
-        // Available modes are "spheres", "backbone", "both", "sticks", "ball-and-stick", "space-filling", and "lines"
-        methods.add_method_mut(
-            "set_representation_mode",
-            |_, this, requested_representation_mode: String| {
-                let mut mutable_protein_data = this.inner.write().unwrap();
-                mutable_protein_data.representation = 
-                    match requested_representation_mode.to_lowercase().as_str() {
-                        "spheres" | "sphere" => Representation::Spheres,
-                        "backbone" | "trace" | "line_trace" => Representation::Backbone,
-                        "both" | "all" | "backbone_and_spheres" => Representation::BackboneAndSpheres,
-                        "sticks" | "stick" | "cylinders" => Representation::Sticks,
-                        "ball_and_stick" | "ball-and-stick" => Representation::BallAndStick,
-                        "space_filling" | "space-filling" | "vdw" => Representation::SpaceFilling,
-                        "lines" | "line" | "wireframe" => Representation::Lines,
-                        _ => {
-                            return Err(mlua::Error::RuntimeError(format!(
-                        "Unknown representation: '{}'. Use 'spheres', 'backbone', 'sticks', 'ball-and-stick', etc.",
-                        requested_representation_mode
-                    )));
-                        }
-                    };
-                Ok(())
-            },
-        );
-
-        // protein:calculate_ramachandran_dihedral_angles() returns a list of Phi/Psi points for all residues
+                // protein:set_representation_mode(mode) sets the representation mode
+                // Available modes are "spheres", "backbone_trace", "backbone_and_spheres", "sticks", "ball_and_stick", "space_filling", and "lines"
+                methods.add_method_mut(
+                    "set_representation_mode",
+                    |_, this, requested_representation_mode: String| {
+                        let mut mutable_protein_data = this.inner.write().unwrap();
+                        mutable_protein_data.representation =
+                            match requested_representation_mode.to_lowercase().as_str() {
+                                "spheres" => Representation::Spheres,
+                                "backbone_trace" => Representation::Backbone,
+                                "backbone_and_spheres" => Representation::BackboneAndSpheres,
+                                "sticks" => Representation::Sticks,
+                                "ball_and_stick" => Representation::BallAndStick,
+                                "space_filling" => Representation::SpaceFilling,
+                                "lines" => Representation::Lines,
+                                _ => {
+                                    return Err(mlua::Error::RuntimeError(format!(
+                                "Unknown representation: '{}'. Use 'spheres', 'backbone_trace', 'sticks', 'ball_and_stick', etc.",
+                                requested_representation_mode
+                            )));
+                                }
+                            };
+                        Ok(())
+                    },
+                );
+                // protein:calculate_ramachandran_dihedral_angles() returns a list of Phi/Psi points for all residues
         methods.add_method("calculate_ramachandran_dihedral_angles", |lua_context, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let backbone_dihedral_results_collection = crate::analysis::dihedrals::calculate_all_backbone_dihedrals(&locked_protein_data);
@@ -514,17 +513,17 @@ impl UserData for LuaProtein {
         });
 
         // protein:set_color_scheme_by_property(scheme) sets the color scheme
-        // Available schemes are "chain", "element", "bfactor", and "secondary"
+        // Available schemes are "chain_identifier", "chemical_element", "bfactor_value", and "secondary_structure"
         methods.add_method_mut("set_color_scheme_by_property", |_, this, requested_color_scheme_mode: String| {
             let mut mutable_protein_data = this.inner.write().unwrap();
             mutable_protein_data.color_scheme = match requested_color_scheme_mode.to_lowercase().as_str() {
-                "chain" | "chains" => ColorScheme::ByChain,
-                "element" | "elements" | "atom" => ColorScheme::ByElement,
-                "bfactor" | "b-factor" | "temperature" => ColorScheme::ByBFactor,
-                "secondary" | "ss" | "structure" => ColorScheme::BySecondary,
+                "chain_identifier" => ColorScheme::ByChain,
+                "chemical_element" => ColorScheme::ByElement,
+                "bfactor_value" => ColorScheme::ByBFactor,
+                "secondary_structure" => ColorScheme::BySecondary,
                 _ => {
                     return Err(mlua::Error::RuntimeError(format!(
-                        "Unknown color scheme: '{}'. Use 'chain', 'element', 'bfactor', or 'secondary'",
+                        "Unknown color scheme: '{}'. Use 'chain_identifier', 'chemical_element', 'bfactor_value', or 'secondary_structure'",
                         requested_color_scheme_mode
                     )));
                 }
