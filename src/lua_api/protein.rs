@@ -40,26 +40,26 @@ impl UserData for LuaProtein {
         // protein:get_protein_name() returns the name/ID of the protein
         methods.add_method("get_protein_name", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
-            Ok(locked_protein_data.name.clone())
+            Ok(locked_protein_data.display_name.clone())
         });
 
         // protein:get_total_atom_count() returns the total number of atoms in the protein
         methods.add_method("get_total_atom_count", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
-            Ok(locked_protein_data.atom_count())
+            Ok(locked_protein_data.get_total_atom_count())
         });
 
         // protein:get_chain_identifiers() returns a list of all chain identifiers in the protein
         methods.add_method("get_chain_identifiers", |lua_context, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
-            let available_chain_identifiers = locked_protein_data.chain_ids();
+            let available_chain_identifiers = locked_protein_data.get_all_chain_identifiers();
             lua_context.create_sequence_from(available_chain_identifiers)
         });
 
         // protein:calculate_center_of_mass() returns the center of mass of the protein
         methods.add_method("calculate_center_of_mass", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
-            let center_of_mass_vector = locked_protein_data.center_of_mass();
+            let center_of_mass_vector = locked_protein_data.calculate_geometric_center_of_mass();
             Ok((
                 center_of_mass_vector.x,
                 center_of_mass_vector.y,
@@ -71,7 +71,7 @@ impl UserData for LuaProtein {
         methods.add_method("calculate_bounding_box_dimensions", |_, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let (minimum_coordinate_bound, maximum_coordinate_bound) =
-                locked_protein_data.bounding_box();
+                locked_protein_data.calculate_axis_aligned_bounding_box();
             Ok((
                 minimum_coordinate_bound.x,
                 minimum_coordinate_bound.y,
@@ -101,31 +101,43 @@ impl UserData for LuaProtein {
         // protein:set_visibility_on() and protein:set_visibility_off() control whether the protein is rendered
         methods.add_method_mut("set_visibility_on", |_, this, ()| {
             let mut mutable_protein_data = this.inner.write().unwrap();
-            mutable_protein_data.visible = true;
+            mutable_protein_data.is_visible = true;
+            mutable_protein_data.structural_data_revision_number += 1;
             Ok(())
         });
 
         methods.add_method_mut("set_visibility_off", |_, this, ()| {
             let mut mutable_protein_data = this.inner.write().unwrap();
-            mutable_protein_data.visible = false;
+            mutable_protein_data.is_visible = false;
+            mutable_protein_data.structural_data_revision_number += 1;
             Ok(())
         });
 
-        // protein:get_summary_information() returns a summary string with protein information
-        methods.add_method("get_summary_information", |_, this, ()| {
+        // protein:get_summary_information() returns a table with protein information
+        methods.add_method("get_summary_information", |lua_context, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
-            let (minimum_coordinate_bound, maximum_coordinate_bound) = locked_protein_data.bounding_box();
+            let (minimum_coordinate_bound, maximum_coordinate_bound) =
+                locked_protein_data.calculate_axis_aligned_bounding_box();
             let bounding_box_dimensions = maximum_coordinate_bound - minimum_coordinate_bound;
-            Ok(format!(
-                "Protein: {}\n  Atoms: {}\n  Chains: {:?}\n  Residues: ~{}\n  Size: {:.1} x {:.1} x {:.1} A",
-                locked_protein_data.name,
-                locked_protein_data.atom_count(),
-                locked_protein_data.chain_ids(),
-                locked_protein_data.get_alpha_carbon_positions_and_chain_identifiers().len(),
-                bounding_box_dimensions.x,
-                bounding_box_dimensions.y,
-                bounding_box_dimensions.z
-            ))
+
+            let summary_table = lua_context.create_table()?;
+            summary_table.set("name", locked_protein_data.display_name.clone())?;
+            summary_table.set("atom_count", locked_protein_data.get_total_atom_count())?;
+            summary_table.set("chains", locked_protein_data.get_all_chain_identifiers())?;
+            summary_table.set(
+                "residue_count",
+                locked_protein_data
+                    .get_alpha_carbon_positions_and_chain_identifiers()
+                    .len(),
+            )?;
+
+            let size_table = lua_context.create_table()?;
+            size_table.set("x", bounding_box_dimensions.x)?;
+            size_table.set("y", bounding_box_dimensions.y)?;
+            size_table.set("z", bounding_box_dimensions.z)?;
+            summary_table.set("size", size_table)?;
+
+            Ok(summary_table)
         });
 
         // protein:get_all_atom_data() returns a table containing detailed information for every atom
@@ -133,24 +145,26 @@ impl UserData for LuaProtein {
             let locked_protein_data = this.inner.read().unwrap();
             let lua_atoms_collection_table = lua_context.create_table()?;
 
-            let mut atom_indexing_counter = 1;
-            for current_atom_reference in locked_protein_data.pdb.atoms() {
-                let lua_atom_data_table = lua_context.create_table()?;
-                let atom_coordinates_tuple = current_atom_reference.pos();
-                lua_atom_data_table.set("x", atom_coordinates_tuple.0)?;
-                lua_atom_data_table.set("y", atom_coordinates_tuple.1)?;
-                lua_atom_data_table.set("z", atom_coordinates_tuple.2)?;
-                lua_atom_data_table.set("name", current_atom_reference.name())?;
-                lua_atom_data_table.set(
-                    "element",
-                    current_atom_reference
-                        .element()
-                        .map(|element_reference| element_reference.symbol())
-                        .unwrap_or("?"),
-                )?;
-                lua_atom_data_table.set("bfactor", current_atom_reference.b_factor())?;
-                lua_atoms_collection_table.set(atom_indexing_counter, lua_atom_data_table)?;
-                atom_indexing_counter += 1;
+            if let Some(pdb) = &locked_protein_data.underlying_pdb_data {
+                let mut atom_indexing_counter = 1;
+                for current_atom_reference in pdb.atoms() {
+                    let lua_atom_data_table = lua_context.create_table()?;
+                    let atom_coordinates_tuple = current_atom_reference.pos();
+                    lua_atom_data_table.set("x", atom_coordinates_tuple.0)?;
+                    lua_atom_data_table.set("y", atom_coordinates_tuple.1)?;
+                    lua_atom_data_table.set("z", atom_coordinates_tuple.2)?;
+                    lua_atom_data_table.set("name", current_atom_reference.name())?;
+                    lua_atom_data_table.set(
+                        "element",
+                        current_atom_reference
+                            .element()
+                            .map(|element_reference| element_reference.symbol())
+                            .unwrap_or("?"),
+                    )?;
+                    lua_atom_data_table.set("bfactor", current_atom_reference.b_factor())?;
+                    lua_atoms_collection_table.set(atom_indexing_counter, lua_atom_data_table)?;
+                    atom_indexing_counter += 1;
+                }
             }
 
             Ok(lua_atoms_collection_table)
@@ -163,31 +177,33 @@ impl UserData for LuaProtein {
                 let locked_protein_data = this.inner.read().unwrap();
                 let lua_residues_collection_table = lua_context.create_table()?;
 
-                let mut residue_indexing_counter = 1;
-                for current_chain_reference in locked_protein_data.pdb.chains() {
-                    if let Some(ref filter_string) = chain_identifier_filter {
-                        if current_chain_reference.id() != filter_string {
-                            continue;
+                if let Some(pdb) = &locked_protein_data.underlying_pdb_data {
+                    let mut residue_indexing_counter = 1;
+                    for current_chain_reference in pdb.chains() {
+                        if let Some(ref filter_string) = chain_identifier_filter {
+                            if current_chain_reference.id() != filter_string {
+                                continue;
+                            }
                         }
-                    }
 
-                    for current_residue_reference in current_chain_reference.residues() {
-                        let lua_residue_data_table = lua_context.create_table()?;
-                        lua_residue_data_table.set("chain", current_chain_reference.id())?;
-                        lua_residue_data_table
-                            .set("number", current_residue_reference.serial_number())?;
-
-                        // Get residue name from first conformer
-                        if let Some(current_conformer_reference) =
-                            current_residue_reference.conformers().next()
-                        {
+                        for current_residue_reference in current_chain_reference.residues() {
+                            let lua_residue_data_table = lua_context.create_table()?;
+                            lua_residue_data_table.set("chain", current_chain_reference.id())?;
                             lua_residue_data_table
-                                .set("name", current_conformer_reference.name())?;
-                        }
+                                .set("number", current_residue_reference.serial_number())?;
 
-                        lua_residues_collection_table
-                            .set(residue_indexing_counter, lua_residue_data_table)?;
-                        residue_indexing_counter += 1;
+                            // Get residue name from first conformer
+                            if let Some(current_conformer_reference)
+                                = current_residue_reference.conformers().next()
+                            {
+                                lua_residue_data_table
+                                    .set("name", current_conformer_reference.name())?;
+                            }
+
+                            lua_residues_collection_table
+                                .set(residue_indexing_counter, lua_residue_data_table)?;
+                            residue_indexing_counter += 1;
+                        }
                     }
                 }
 
@@ -265,6 +281,7 @@ impl UserData for LuaProtein {
         methods.add_method_mut("perform_secondary_structure_assignment", |_, this, ()| {
             let mut mutable_protein_data = this.inner.write().unwrap();
             crate::analysis::dssp::assign_secondary_structure_to_protein(&mut mutable_protein_data);
+            mutable_protein_data.structural_data_revision_number += 1;
             Ok(())
         });
 
@@ -272,75 +289,80 @@ impl UserData for LuaProtein {
         methods.add_method("calculate_root_mean_square_fluctuation", |lua_context, this, selection: LuaSelection| {
             let locked_protein_data = this.inner.read().unwrap();
             
-            // Collect coordinates for selected atoms across all models
-            let mut model_coordinates_collection = Vec::new();
-            for current_model in locked_protein_data.pdb.models() {
-                let mut atom_positions_in_model = Vec::new();
-                // This is slightly complex because selection indices are global or relative to a specific model?
-                // Assuming selection indices are global indices into pdb.atoms()
-                for &atom_index in &selection.inner_selection_set.atom_indices {
-                    if let Some(atom_reference) = current_model.atoms().nth(atom_index) {
-                        let pos = atom_reference.pos();
-                        atom_positions_in_model.push(glam::Vec3::new(pos.0 as f32, pos.1 as f32, pos.2 as f32));
+            if let Some(pdb) = &locked_protein_data.underlying_pdb_data {
+                // Collect coordinates for selected atoms across all models
+                let mut model_coordinates_collection = Vec::new();
+                for current_model in pdb.models() {
+                    let mut atom_positions_in_model = Vec::new();
+                    // Assuming selection indices are global indices into pdb.atoms()
+                    for &atom_index in &selection.inner_selection_set.atom_indices {
+                        if let Some(atom_reference) = current_model.atoms().nth(atom_index) {
+                            let pos = atom_reference.pos();
+                            atom_positions_in_model.push(glam::Vec3::new(pos.0 as f32, pos.1 as f32, pos.2 as f32));
+                        }
+                    }
+                    if !atom_positions_in_model.is_empty() {
+                        model_coordinates_collection.push(atom_positions_in_model);
                     }
                 }
-                if !atom_positions_in_model.is_empty() {
-                    model_coordinates_collection.push(atom_positions_in_model);
+
+                if model_coordinates_collection.is_empty() {
+                    return Ok(lua_context.create_table()?);
                 }
-            }
 
-            if model_coordinates_collection.is_empty() {
-                return Ok(lua_context.create_table()?);
-            }
+                let model_count = model_coordinates_collection.len();
+                let atom_count = model_coordinates_collection[0].len();
+                let rmsf_results_table = lua_context.create_table()?;
 
-            let model_count = model_coordinates_collection.len();
-            let atom_count = model_coordinates_collection[0].len();
-            let rmsf_results_table = lua_context.create_table()?;
+                for atom_index in 0..atom_count {
+                    let mut average_position_vector = glam::Vec3::ZERO;
+                    for model_index in 0..model_count {
+                        average_position_vector += model_coordinates_collection[model_index][atom_index];
+                    }
+                    average_position_vector /= model_count as f32;
 
-            for atom_index in 0..atom_count {
-                let mut average_position_vector = glam::Vec3::ZERO;
-                for model_index in 0..model_count {
-                    average_position_vector += model_coordinates_collection[model_index][atom_index];
+                    let mut sum_of_squared_deviations = 0.0;
+                    for model_index in 0..model_count {
+                        sum_of_squared_deviations += model_coordinates_collection[model_index][atom_index].distance_squared(average_position_vector);
+                    }
+                    let rmsf_value = (sum_of_squared_deviations / model_count as f32).sqrt();
+                    rmsf_results_table.set(atom_index + 1, rmsf_value)?;
                 }
-                average_position_vector /= model_count as f32;
 
-                let mut sum_of_squared_deviations = 0.0;
-                for model_index in 0..model_count {
-                    sum_of_squared_deviations += model_coordinates_collection[model_index][atom_index].distance_squared(average_position_vector);
-                }
-                let rmsf_value = (sum_of_squared_deviations / model_count as f32).sqrt();
-                rmsf_results_table.set(atom_index + 1, rmsf_value)?;
+                Ok(rmsf_results_table)
+            } else {
+                Ok(lua_context.create_table()?)
             }
-
-            Ok(rmsf_results_table)
         });
 
-                // protein:set_representation_mode(mode) sets the representation mode
-                // Available modes are "spheres", "backbone_trace", "backbone_and_spheres", "sticks", "ball_and_stick", "space_filling", and "lines"
-                methods.add_method_mut(
-                    "set_representation_mode",
-                    |_, this, requested_representation_mode: String| {
-                        let mut mutable_protein_data = this.inner.write().unwrap();
-                        mutable_protein_data.representation =
-                            match requested_representation_mode.to_lowercase().as_str() {
-                                "spheres" => Representation::Spheres,
-                                "backbone_trace" => Representation::Backbone,
-                                "backbone_and_spheres" => Representation::BackboneAndSpheres,
-                                "sticks" => Representation::Sticks,
-                                "ball_and_stick" => Representation::BallAndStick,
-                                "space_filling" => Representation::SpaceFilling,
-                                "lines" => Representation::Lines,
-                                _ => {
-                                    return Err(mlua::Error::RuntimeError(format!(
-                                "Unknown representation: '{}'. Use 'spheres', 'backbone_trace', 'sticks', 'ball_and_stick', etc.",
-                                requested_representation_mode
-                            )));
-                                }
-                            };
-                        Ok(())
-                    },
-                );
-                // protein:calculate_ramachandran_dihedral_angles() returns a list of Phi/Psi points for all residues
+        // protein:set_representation_mode(mode) sets the representation mode
+        // Available modes are "spheres", "backbone_trace", "backbone_and_spheres", "sticks", "ball_and_stick", "space_filling", and "lines"
+        methods.add_method_mut(
+            "set_representation_mode",
+            |_, this, requested_representation_mode: String| {
+                let mut mutable_protein_data = this.inner.write().unwrap();
+                mutable_protein_data.visual_representation =
+                    match requested_representation_mode.to_lowercase().as_str() {
+                        "spheres" => Representation::Spheres,
+                        "backbone_trace" => Representation::Backbone,
+                        "backbone_and_spheres" => Representation::BackboneAndSpheres,
+                        "sticks" => Representation::Sticks,
+                        "ball_and_stick" => Representation::BallAndStick,
+                        "space_filling" => Representation::SpaceFilling,
+                        "lines" => Representation::Lines,
+                        _ => {
+                            return Err(mlua::Error::RuntimeError(format!(
+                        "Unknown representation: '{}'. Use 'spheres', 'backbone_trace', 'sticks', 'ball_and_stick', etc.",
+                        requested_representation_mode
+                    )));
+                        }
+                    };
+                mutable_protein_data.structural_data_revision_number += 1;
+                Ok(())
+            },
+        );
+
+        // protein:calculate_ramachandran_dihedral_angles() returns a list of Phi/Psi points for all residues
         methods.add_method("calculate_ramachandran_dihedral_angles", |lua_context, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
             let backbone_dihedral_results_collection = crate::analysis::dihedrals::calculate_all_backbone_dihedrals(&locked_protein_data);
@@ -404,59 +426,93 @@ impl UserData for LuaProtein {
         methods.add_method_mut("set_surface_visibility", |_, this, should_be_visible: bool| {
             let mut mutable_protein_data = this.inner.write().unwrap();
             mutable_protein_data.molecular_surface_mesh.is_surface_visible = should_be_visible;
+            mutable_protein_data.structural_data_revision_number += 1;
             Ok(())
         });
 
         // protein:calculate_root_mean_square_deviation(other_protein) calculates the RMSD between two proteins based on Alpha Carbons from the first model
         // protein:calculate_root_mean_square_deviation(other_protein, selection) calculates the RMSD between two proteins, optionally restricted to a selection
         methods.add_method("calculate_root_mean_square_deviation", |_, this, (other_lua_protein, optional_selection): (LuaProtein, Option<LuaSelection>)| {
-            let reference_protein_locked_data = this.inner.read().unwrap();
-            let moving_protein_locked_data = other_lua_protein.inner.read().unwrap();
+            let this_protein_data = this.inner.read().unwrap();
+            let other_protein_data = other_lua_protein.inner.read().unwrap();
             
-            let reference_alpha_carbon_positions = if let Some(selection) = optional_selection {
+            let this_positions = if let Some(selection) = &optional_selection {
                 let mut selected_positions = Vec::new();
-                for &atom_index in &selection.inner_selection_set.atom_indices {
-                    let atom_reference = reference_protein_locked_data.pdb.atoms().nth(atom_index).unwrap();
-                    let atom_position_tuple = atom_reference.pos();
-                    selected_positions.push(glam::Vec3::new(atom_position_tuple.0 as f32, atom_position_tuple.1 as f32, atom_position_tuple.2 as f32));
+                if let Some(pdb) = &this_protein_data.underlying_pdb_data {
+                    let atoms: Vec<_> = pdb.atoms().collect();
+                    let mut sorted_indices: Vec<_> = selection.inner_selection_set.atom_indices.iter().cloned().collect();
+                    sorted_indices.sort_unstable();
+                    for atom_index in sorted_indices {
+                        if let Some(atom_reference) = atoms.get(atom_index) {
+                            let atom_position_tuple = atom_reference.pos();
+                            selected_positions.push(glam::Vec3::new(atom_position_tuple.0 as f32, atom_position_tuple.1 as f32, atom_position_tuple.2 as f32));
+                        }
+                    }
                 }
                 selected_positions
             } else {
-                reference_protein_locked_data.get_alpha_carbon_positions_for_first_model()
+                this_protein_data.get_alpha_carbon_positions_for_first_model()
             };
                 
-            let moving_alpha_carbon_positions = moving_protein_locked_data
-                .get_alpha_carbon_positions_for_first_model();
+            let other_positions = if let Some(selection) = &optional_selection {
+                let mut selected_positions = Vec::new();
+                if let Some(pdb) = &other_protein_data.underlying_pdb_data {
+                    let atoms: Vec<_> = pdb.atoms().collect();
+                    let mut sorted_indices: Vec<_> = selection.inner_selection_set.atom_indices.iter().cloned().collect();
+                    sorted_indices.sort_unstable();
+                    for atom_index in sorted_indices {
+                        if let Some(atom_reference) = atoms.get(atom_index) {
+                            let atom_position_tuple = atom_reference.pos();
+                            selected_positions.push(glam::Vec3::new(atom_position_tuple.0 as f32, atom_position_tuple.1 as f32, atom_position_tuple.2 as f32));
+                        }
+                    }
+                }
+                selected_positions
+            } else {
+                other_protein_data.get_alpha_carbon_positions_for_first_model()
+            };
             
-            if reference_alpha_carbon_positions.len() != moving_alpha_carbon_positions.len() {
+            if this_positions.len() != other_positions.len() {
                 return Err(mlua::Error::RuntimeError(format!(
                     "Coordinate sets must have the same length for RMSD calculation ({} vs {} atoms).",
-                    reference_alpha_carbon_positions.len(),
-                    moving_alpha_carbon_positions.len()
+                    this_positions.len(),
+                    other_positions.len()
                 )));
             }
 
             crate::analysis::rmsd::calculate_rmsd_between_coordinate_sets(
-                &reference_alpha_carbon_positions,
-                &moving_alpha_carbon_positions
+                &this_positions,
+                &other_positions
             ).map_err(|error_message| mlua::Error::RuntimeError(error_message))
         });
 
         // protein:superimpose_onto_reference_structure(reference_protein, selection) superimposes this protein onto a reference using Kabsch algorithm
         methods.add_method_mut("superimpose_onto_reference_structure", |_, this, (reference_lua_protein, optional_selection): (LuaProtein, Option<LuaSelection>)| {
+            if Arc::ptr_eq(&this.inner, &reference_lua_protein.inner) {
+                return Ok(());
+            }
+
             let mut moving_protein_mutable_data = this.inner.write().unwrap();
             let reference_protein_locked_data = reference_lua_protein.inner.read().unwrap();
             
             let (reference_alpha_carbon_positions, moving_alpha_carbon_positions) = if let Some(selection) = optional_selection {
                 let mut reference_positions = Vec::new();
                 let mut moving_positions = Vec::new();
-                for &atom_index in &selection.inner_selection_set.atom_indices {
-                    let reference_atom_handle = reference_protein_locked_data.pdb.atoms().nth(atom_index).unwrap();
-                    let moving_atom_handle = moving_protein_mutable_data.pdb.atoms().nth(atom_index).unwrap();
-                    let reference_atom_position_tuple = reference_atom_handle.pos();
-                    let moving_atom_position_tuple = moving_atom_handle.pos();
-                    reference_positions.push(glam::Vec3::new(reference_atom_position_tuple.0 as f32, reference_atom_position_tuple.1 as f32, reference_atom_position_tuple.2 as f32));
-                    moving_positions.push(glam::Vec3::new(moving_atom_position_tuple.0 as f32, moving_atom_position_tuple.1 as f32, moving_atom_position_tuple.2 as f32));
+                if let (Some(ref_pdb), Some(mov_pdb)) = (&reference_protein_locked_data.underlying_pdb_data, &moving_protein_mutable_data.underlying_pdb_data) {
+                    let ref_atoms: Vec<_> = ref_pdb.atoms().collect();
+                    let mov_atoms: Vec<_> = mov_pdb.atoms().collect();
+                    
+                    let mut sorted_indices: Vec<_> = selection.inner_selection_set.atom_indices.iter().cloned().collect();
+                    sorted_indices.sort_unstable();
+
+                    for atom_index in sorted_indices {
+                        if let (Some(reference_atom_handle), Some(moving_atom_handle)) = (ref_atoms.get(atom_index), mov_atoms.get(atom_index)) {
+                            let reference_atom_position_tuple = reference_atom_handle.pos();
+                            let moving_atom_position_tuple = moving_atom_handle.pos();
+                            reference_positions.push(glam::Vec3::new(reference_atom_position_tuple.0 as f32, reference_atom_position_tuple.1 as f32, reference_atom_position_tuple.2 as f32));
+                            moving_positions.push(glam::Vec3::new(moving_atom_position_tuple.0 as f32, moving_atom_position_tuple.1 as f32, moving_atom_position_tuple.2 as f32));
+                        }
+                    }
                 }
                 (reference_positions, moving_positions)
             } else {
@@ -475,8 +531,8 @@ impl UserData for LuaProtein {
             }
             
             // Calculate centers of mass for centering
-            let reference_center_of_mass = reference_protein_locked_data.center_of_mass();
-            let moving_center_of_mass = moving_protein_mutable_data.center_of_mass();
+            let reference_center_of_mass = reference_protein_locked_data.calculate_geometric_center_of_mass();
+            let moving_center_of_mass = moving_protein_mutable_data.calculate_geometric_center_of_mass();
             
             let reference_centered_positions: Vec<_> = reference_alpha_carbon_positions.iter() 
                 .map(|&position_vector| position_vector - reference_center_of_mass)
@@ -491,24 +547,27 @@ impl UserData for LuaProtein {
             ).map_err(|error_message| mlua::Error::RuntimeError(error_message))?;
             
             // Apply transformation to all atoms in the moving protein
-            for current_atom_reference in moving_protein_mutable_data.pdb.atoms_mut() {
-                let current_position_tuple = current_atom_reference.pos();
-                let current_position_vector = glam::Vec3::new(
-                    current_position_tuple.0 as f32,
-                    current_position_tuple.1 as f32,
-                    current_position_tuple.2 as f32
-                );
-                
-                // Centering, rotating, and moving to reference center
-                let transformed_position_vector = optimal_rotation_matrix * (current_position_vector - moving_center_of_mass) + reference_center_of_mass;
-                
-                current_atom_reference.set_pos((
-                    transformed_position_vector.x as f64,
-                    transformed_position_vector.y as f64,
-                    transformed_position_vector.z as f64
-                )).unwrap();
+            if let Some(pdb) = &mut moving_protein_mutable_data.underlying_pdb_data {
+                for current_atom_reference in pdb.atoms_mut() {
+                    let current_position_tuple = current_atom_reference.pos();
+                    let current_position_vector = glam::Vec3::new(
+                        current_position_tuple.0 as f32,
+                        current_position_tuple.1 as f32,
+                        current_position_tuple.2 as f32
+                    );
+                    
+                    // Centering, rotating, and moving to reference center
+                    let transformed_position_vector = optimal_rotation_matrix * (current_position_vector - moving_center_of_mass) + reference_center_of_mass;
+                    
+                    current_atom_reference.set_pos((
+                        transformed_position_vector.x as f64,
+                        transformed_position_vector.y as f64,
+                        transformed_position_vector.z as f64
+                    )).unwrap();
+                }
             }
             
+            moving_protein_mutable_data.structural_data_revision_number += 1;
             Ok(())
         });
 
@@ -516,7 +575,7 @@ impl UserData for LuaProtein {
         // Available schemes are "chain_identifier", "chemical_element", "bfactor_value", and "secondary_structure"
         methods.add_method_mut("set_color_scheme_by_property", |_, this, requested_color_scheme_mode: String| {
             let mut mutable_protein_data = this.inner.write().unwrap();
-            mutable_protein_data.color_scheme = match requested_color_scheme_mode.to_lowercase().as_str() {
+            mutable_protein_data.active_color_scheme = match requested_color_scheme_mode.to_lowercase().as_str() {
                 "chain_identifier" => ColorScheme::ByChain,
                 "chemical_element" => ColorScheme::ByElement,
                 "bfactor_value" => ColorScheme::ByBFactor,
@@ -528,6 +587,7 @@ impl UserData for LuaProtein {
                     )));
                 }
             };
+            mutable_protein_data.structural_data_revision_number += 1;
             Ok(())
         });
 
@@ -542,11 +602,12 @@ impl UserData for LuaProtein {
                 f32,
             )| {
                 let mut mutable_protein_data = this.inner.write().unwrap();
-                mutable_protein_data.color_scheme = ColorScheme::Uniform([
+                mutable_protein_data.active_color_scheme = ColorScheme::Uniform([
                     red_color_component,
                     green_color_component,
                     blue_color_component,
                 ]);
+                mutable_protein_data.structural_data_revision_number += 1;
                 Ok(())
             },
         );

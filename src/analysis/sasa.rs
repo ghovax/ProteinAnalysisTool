@@ -11,9 +11,10 @@ pub fn calculate_protein_solvent_accessible_surface_area(
 ) -> f32 {
     use rayon::prelude::*;
 
-    // 1. Pre-calculate atom positions and their VdW radii extended by probe radius
-    let atom_data_collection: Vec<(Vec3, f32)> = protein_data.pdb.atoms()
-        .map(|atom_reference| {
+    if let Some(pdb) = &protein_data.underlying_pdb_data {
+        // 1. Pre-calculate atom positions and their VdW radii extended by probe radius
+        let atom_data_collection: Vec<(Vec3, f32)> = pdb.atoms()
+            .map(|atom_reference| {
             let position_tuple = atom_reference.pos();
             let element_symbol = atom_reference.element().map(|e| e.symbol()).unwrap_or("?");
             let vdw_radius = match element_symbol {
@@ -74,7 +75,10 @@ pub fn calculate_protein_solvent_accessible_surface_area(
         })
         .sum();
 
-    total_accessible_surface_area
+        total_accessible_surface_area
+    } else {
+        0.0
+    }
 }
 
 /// Generates a set of points uniformly distributed on a unit sphere using the Fibonacci spiral method

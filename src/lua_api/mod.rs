@@ -45,30 +45,20 @@ impl ScriptEngine {
         pdb_api_table.set(
             "fetch_protein_from_rcsb",
             lua_runtime_instance.create_function(move |_lua, requested_pdb_code: String| {
-                info!("Fetching PDB: {}...", requested_pdb_code);
-                let new_store = Arc::new(RwLock::new(ProteinStore::new()));
-                let mut locked_new_store = new_store.write().unwrap();
-                match locked_new_store.fetch(&requested_pdb_code) {
+                info!("Requesting fetch for PDB: {}...", requested_pdb_code);
+                let mut locked_global_store = cloned_global_store.write().unwrap();
+                match locked_global_store.fetch(&requested_pdb_code) {
                     Ok(shared_protein_handle) => {
-                        // Also add to global store for listing/saving
-                        cloned_global_store.write().unwrap().add(shared_protein_handle.clone());
-
-                        let locked_protein_data = shared_protein_handle.read().unwrap();
-                        info!(
-                            "Loaded {} with {} atoms, {} chains",
-                            locked_protein_data.name,
-                            locked_protein_data.atom_count(),
-                            locked_protein_data.chain_ids().len()
-                        );
-                        drop(locked_protein_data);
+                        let new_window_store = Arc::new(RwLock::new(ProteinStore::new()));
+                        new_window_store.write().unwrap().add(shared_protein_handle.clone());
 
                         // Create a new camera for this window
                         let new_camera = Arc::new(RwLock::new(Camera::new(1.0))); // Aspect will be set on resize
 
                         // Signal to open a new window
-                        let _ = cloned_event_sender.send(ScriptEvent::NewWindow(new_store.clone(), new_camera));
+                        let _ = cloned_event_sender.send(ScriptEvent::NewWindow(new_window_store, new_camera));
 
-                        Ok(LuaProtein::new(shared_protein_handle.clone()))
+                        Ok(LuaProtein::new(shared_protein_handle))
                     }
                     Err(lua_runtime_error_message) => {
                         Err(mlua::Error::RuntimeError(lua_runtime_error_message))
@@ -83,30 +73,20 @@ impl ScriptEngine {
         pdb_api_table.set(
             "load_protein_from_local_file",
             lua_runtime_instance.create_function(move |_lua, requested_file_path: String| {
-                info!("Loading file: {}...", requested_file_path);
-                let new_store = Arc::new(RwLock::new(ProteinStore::new()));
-                let mut locked_new_store = new_store.write().unwrap();
-                match locked_new_store.load(&requested_file_path) {
+                info!("Requesting load for file: {}...", requested_file_path);
+                let mut locked_global_store = cloned_global_store.write().unwrap();
+                match locked_global_store.load(&requested_file_path) {
                     Ok(shared_protein_handle) => {
-                        // Also add to global store for listing/saving
-                        cloned_global_store.write().unwrap().add(shared_protein_handle.clone());
-
-                        let locked_protein_data = shared_protein_handle.read().unwrap();
-                        info!(
-                            "Loaded {} with {} atoms, {} chains",
-                            locked_protein_data.name,
-                            locked_protein_data.atom_count(),
-                            locked_protein_data.chain_ids().len()
-                        );
-                        drop(locked_protein_data);
+                        let new_window_store = Arc::new(RwLock::new(ProteinStore::new()));
+                        new_window_store.write().unwrap().add(shared_protein_handle.clone());
 
                         // Create a new camera for this window
                         let new_camera = Arc::new(RwLock::new(Camera::new(1.0))); // Aspect will be set on resize
 
                         // Signal to open a new window
-                        let _ = cloned_event_sender.send(ScriptEvent::NewWindow(new_store.clone(), new_camera));
+                        let _ = cloned_event_sender.send(ScriptEvent::NewWindow(new_window_store, new_camera));
 
-                        Ok(LuaProtein::new(shared_protein_handle.clone()))
+                        Ok(LuaProtein::new(shared_protein_handle))
                     }
                     Err(lua_runtime_error_message) => {
                         Err(mlua::Error::RuntimeError(lua_runtime_error_message))
@@ -186,7 +166,7 @@ impl ScriptEngine {
                 for (protein_index, shared_protein_handle) in locked_protein_store.iter().enumerate() {
                     let locked_protein_data = shared_protein_handle.read().unwrap();
                     let lua_protein_variable_name = format!("protein_object_{}", protein_index);
-                    match &locked_protein_data.source {
+                    match &locked_protein_data.data_source {
                         crate::protein::structure::ProteinSource::Rcsb(pdb_code) => {
                             writeln!(session_output_file, "local {} = pdb.fetch_protein_from_rcsb(\"{}\")", lua_protein_variable_name, pdb_code).unwrap();
                         }
@@ -195,7 +175,7 @@ impl ScriptEngine {
                         }
                     }
 
-                    let representation_mode_string = match locked_protein_data.representation {
+                    let representation_mode_string = match locked_protein_data.visual_representation {
                         crate::protein::structure::Representation::Spheres => "spheres",
                         crate::protein::structure::Representation::Backbone => "backbone_trace",
                         crate::protein::structure::Representation::BackboneAndSpheres => "backbone_and_spheres",
@@ -206,7 +186,7 @@ impl ScriptEngine {
                     };
                     writeln!(session_output_file, "{}:set_representation_mode(\"{}\")", lua_protein_variable_name, representation_mode_string).unwrap();
 
-                    match locked_protein_data.color_scheme {
+                    match locked_protein_data.active_color_scheme {
                         crate::protein::structure::ColorScheme::ByChain => {
                             writeln!(session_output_file, "{}:set_color_scheme_by_property(\"chain_identifier\")", lua_protein_variable_name).unwrap()
                         }
@@ -225,7 +205,7 @@ impl ScriptEngine {
                         }
                     }
 
-                    if !locked_protein_data.visible {
+                    if !locked_protein_data.is_visible {
                         writeln!(session_output_file, "{}:set_visibility_off()", lua_protein_variable_name).unwrap();
                     }
                 }

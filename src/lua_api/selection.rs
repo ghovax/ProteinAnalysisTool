@@ -27,15 +27,17 @@ impl LuaSelection {
         let mut position_sum_vector = Vec3::ZERO;
         let mut selected_atoms_count = 0;
 
-        for &atom_index in &self.inner_selection_set.atom_indices {
-            if let Some(atom_reference) = locked_protein_data.pdb.atoms().nth(atom_index) {
-                let position_tuple = atom_reference.pos();
-                position_sum_vector += Vec3::new(
-                    position_tuple.0 as f32,
-                    position_tuple.1 as f32,
-                    position_tuple.2 as f32,
-                );
-                selected_atoms_count += 1;
+        if let Some(pdb) = &locked_protein_data.underlying_pdb_data {
+            for &atom_index in &self.inner_selection_set.atom_indices {
+                if let Some(atom_reference) = pdb.atoms().nth(atom_index) {
+                    let position_tuple = atom_reference.pos();
+                    position_sum_vector += Vec3::new(
+                        position_tuple.0 as f32,
+                        position_tuple.1 as f32,
+                        position_tuple.2 as f32,
+                    );
+                    selected_atoms_count += 1;
+                }
             }
         }
 
@@ -93,13 +95,16 @@ impl UserData for LuaSelection {
             let mut mutable_protein_data = this.protein_reference.write().unwrap();
             let translation_vector = Vec3::new(offset_x, offset_y, offset_z);
             
-            for &atom_index in &this.inner_selection_set.atom_indices {
-                if let Some(atom_reference) = mutable_protein_data.pdb.atoms_mut().nth(atom_index) {
-                    let current_pos = atom_reference.pos();
-                    let new_pos = Vec3::new(current_pos.0 as f32, current_pos.1 as f32, current_pos.2 as f32) + translation_vector;
-                    atom_reference.set_pos((new_pos.x as f64, new_pos.y as f64, new_pos.z as f64)).unwrap();
+            if let Some(pdb) = &mut mutable_protein_data.underlying_pdb_data {
+                for &atom_index in &this.inner_selection_set.atom_indices {
+                    if let Some(atom_reference) = pdb.atoms_mut().nth(atom_index) {
+                        let current_pos = atom_reference.pos();
+                        let new_pos = Vec3::new(current_pos.0 as f32, current_pos.1 as f32, current_pos.2 as f32) + translation_vector;
+                        atom_reference.set_pos((new_pos.x as f64, new_pos.y as f64, new_pos.z as f64)).unwrap();
+                    }
                 }
             }
+            mutable_protein_data.structural_data_revision_number += 1;
             Ok(())
         });
 
@@ -111,18 +116,21 @@ impl UserData for LuaSelection {
             let rotation_origin = Vec3::new(origin_x, origin_y, origin_z);
             let rotation_quaternion = glam::Quat::from_axis_angle(rotation_axis, angle_degrees.to_radians());
             
-            for &atom_index in &this.inner_selection_set.atom_indices {
-                if let Some(atom_reference) = mutable_protein_data.pdb.atoms_mut().nth(atom_index) {
-                    let current_pos_tuple = atom_reference.pos();
-                    let current_pos_vector = Vec3::new(current_pos_tuple.0 as f32, current_pos_tuple.1 as f32, current_pos_tuple.2 as f32);
-                    
-                    let relative_pos = current_pos_vector - rotation_origin;
-                    let rotated_relative_pos = rotation_quaternion * relative_pos;
-                    let new_world_pos = rotated_relative_pos + rotation_origin;
-                    
-                    atom_reference.set_pos((new_world_pos.x as f64, new_world_pos.y as f64, new_world_pos.z as f64)).unwrap();
+            if let Some(pdb) = &mut mutable_protein_data.underlying_pdb_data {
+                for &atom_index in &this.inner_selection_set.atom_indices {
+                    if let Some(atom_reference) = pdb.atoms_mut().nth(atom_index) {
+                        let current_pos_tuple = atom_reference.pos();
+                        let current_pos_vector = Vec3::new(current_pos_tuple.0 as f32, current_pos_tuple.1 as f32, current_pos_tuple.2 as f32);
+                        
+                        let relative_pos = current_pos_vector - rotation_origin;
+                        let rotated_relative_pos = rotation_quaternion * relative_pos;
+                        let new_world_pos = rotated_relative_pos + rotation_origin;
+                        
+                        atom_reference.set_pos((new_world_pos.x as f64, new_world_pos.y as f64, new_world_pos.z as f64)).unwrap();
+                    }
                 }
             }
+            mutable_protein_data.structural_data_revision_number += 1;
             Ok(())
         });
 

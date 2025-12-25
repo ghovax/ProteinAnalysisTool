@@ -142,25 +142,32 @@ impl WindowState {
 
     fn update_window_title_with_current_state(&mut self) {
         let mut loaded_protein_identifiers_collection = Vec::new();
+        let mut currently_loading_count = 0;
+
         for viewport in &self.viewports {
             let locked_protein_store = viewport.store.read().unwrap();
-            for protein_name in locked_protein_store.list() {
-                if !loaded_protein_identifiers_collection.contains(&protein_name) {
-                    loaded_protein_identifiers_collection.push(protein_name);
+            for shared_handle in locked_protein_store.iter() {
+                let protein = shared_handle.read().unwrap();
+                if protein.is_currently_loading {
+                    currently_loading_count += 1;
+                } else if !loaded_protein_identifiers_collection.contains(&protein.display_name) {
+                    loaded_protein_identifiers_collection.push(protein.display_name.clone());
                 }
             }
         }
 
-        let formatted_window_title = if loaded_protein_identifiers_collection.is_empty() {
-            format!("Protein Viewer (Script: {})", self.active_script_path_identifier)
-        } else {
-            format!(
-                "Protein Viewer (Script: {}, Proteins: {})",
-                self.active_script_path_identifier,
-                loaded_protein_identifiers_collection.join(", ")
-            )
-        };
+        let mut title_parts = Vec::new();
+        title_parts.push(format!("Script: {}", self.active_script_path_identifier));
         
+        if !loaded_protein_identifiers_collection.is_empty() {
+            title_parts.push(format!("Proteins: {}", loaded_protein_identifiers_collection.join(", ")));
+        }
+        
+        if currently_loading_count > 0 {
+            title_parts.push(format!("(Loading {}...)", currently_loading_count));
+        }
+
+        let formatted_window_title = format!("Protein Viewer - {}", title_parts.join(" | "));
         self.window.set_title(&formatted_window_title);
     }
 
@@ -226,13 +233,15 @@ impl WindowState {
 
                 if let Some(protein_shared_reference) = optional_first_protein_entry {
                     let protein_locked_data = protein_shared_reference.read().unwrap();
-                    let protein_center_of_mass = protein_locked_data.center_of_mass();
-                    let (bounding_box_minimum, bounding_box_maximum) =
-                        protein_locked_data.bounding_box();
-                    let bounding_sphere_radius =
-                        (bounding_box_maximum - bounding_box_minimum).length() / 2.0;
-                    drop(protein_locked_data);
-                    camera.focus_on(protein_center_of_mass, bounding_sphere_radius);
+                    if !protein_locked_data.is_currently_loading && protein_locked_data.underlying_pdb_data.is_some() {
+                        let protein_center_of_mass = protein_locked_data.calculate_geometric_center_of_mass();
+                        let (bounding_box_minimum, bounding_box_maximum) =
+                            protein_locked_data.calculate_axis_aligned_bounding_box();
+                        let bounding_sphere_radius =
+                            (bounding_box_maximum - bounding_box_minimum).length() / 2.0;
+                        drop(protein_locked_data);
+                        camera.focus_on(protein_center_of_mass, bounding_sphere_radius);
+                    }
                 }
             }
         }
@@ -338,66 +347,67 @@ impl WindowState {
                             let locked_protein_store = target_viewport.store.read().unwrap();
                             for protein_shared_handle in locked_protein_store.iter() {
                                 let protein_locked_data = protein_shared_handle.read().unwrap();
-                                let protein_identifier_name = protein_locked_data.name.clone();
+                                let protein_identifier_name = protein_locked_data.display_name.clone();
 
-                                let current_representation_mode = protein_locked_data.representation;
+                                let current_visual_representation_mode = protein_locked_data.visual_representation;
 
-                                let base_sphere_hitbox_radius = match current_representation_mode {
-                                    Representation::Spheres | Representation::BackboneAndSpheres => 1.5,
-                                    Representation::BallAndStick => 0.4,
-                                    Representation::SpaceFilling => 1.7,
-                                    _ => 1.0,
-                                };
+                                if let Some(pdb) = &protein_locked_data.underlying_pdb_data {
+                                    let base_sphere_hitbox_radius = match current_visual_representation_mode {
+                                        Representation::Spheres | Representation::BackboneAndSpheres => 1.5,
+                                        Representation::BallAndStick => 0.4,
+                                        Representation::SpaceFilling => 1.7,
+                                        _ => 1.0,
+                                    };
 
-                                for (atom_global_index, current_atom_hierarchy) in protein_locked_data
-                                    .pdb
-                                    .atoms_with_hierarchy()
-                                    .into_iter()
-                                    .enumerate()
-                                {
-                                    let current_atom_reference = current_atom_hierarchy.atom();
-
-                                    if matches!(
-                                        current_representation_mode,
-                                        Representation::Spheres | Representation::BackboneAndSpheres
-                                    ) && current_atom_reference.name() != "CA"
+                                    for (atom_global_index, current_atom_hierarchy) in pdb
+                                        .atoms_with_hierarchy()
+                                        .into_iter()
+                                        .enumerate()
                                     {
-                                        continue;
-                                    }
+                                        let current_atom_reference = current_atom_hierarchy.atom();
 
-                                    let atom_position_tuple = current_atom_reference.pos();
-                                    let atom_world_position_vector = glam::Vec3::new(
-                                        atom_position_tuple.0 as f32,
-                                        atom_position_tuple.1 as f32,
-                                        atom_position_tuple.2 as f32,
-                                    );
+                                        if matches!(
+                                            current_visual_representation_mode,
+                                            Representation::Spheres | Representation::BackboneAndSpheres
+                                        ) && current_atom_reference.name() != "CA"
+                                        {
+                                            continue;
+                                        }
 
-                                    let vector_from_ray_origin_to_atom_center =
-                                        ray_origin_point - atom_world_position_vector;
+                                        let atom_position_tuple = current_atom_reference.pos();
+                                        let atom_world_position_vector = glam::Vec3::new(
+                                            atom_position_tuple.0 as f32,
+                                            atom_position_tuple.1 as f32,
+                                            atom_position_tuple.2 as f32,
+                                        );
 
-                                    let quadratic_coefficient_b = vector_from_ray_origin_to_atom_center
-                                        .dot(ray_direction_unit_vector);
-                                    let quadratic_coefficient_c = vector_from_ray_origin_to_atom_center
-                                        .dot(vector_from_ray_origin_to_atom_center)
-                                        - base_sphere_hitbox_radius * base_sphere_hitbox_radius;
+                                        let vector_from_ray_origin_to_atom_center =
+                                            ray_origin_point - atom_world_position_vector;
 
-                                    let intersection_discriminant_value = quadratic_coefficient_b
-                                        * quadratic_coefficient_b
-                                        - quadratic_coefficient_c;
+                                        let quadratic_coefficient_b = vector_from_ray_origin_to_atom_center
+                                            .dot(ray_direction_unit_vector);
+                                        let quadratic_coefficient_c = vector_from_ray_origin_to_atom_center
+                                            .dot(vector_from_ray_origin_to_atom_center)
+                                            - base_sphere_hitbox_radius * base_sphere_hitbox_radius;
 
-                                    if intersection_discriminant_value >= 0.0 {
-                                        let distance_to_intersection_point = -quadratic_coefficient_b
-                                            - intersection_discriminant_value.sqrt();
-                                        if distance_to_intersection_point > 0.0 {
-                                            if closest_intersection_hit_data.is_none()
-                                                || distance_to_intersection_point
-                                                    < closest_intersection_hit_data.as_ref().unwrap().2
-                                            {
-                                                closest_intersection_hit_data = Some((
-                                                    protein_identifier_name.clone(),
-                                                    atom_global_index,
-                                                    distance_to_intersection_point,
-                                                ));
+                                        let intersection_discriminant_value = quadratic_coefficient_b
+                                            * quadratic_coefficient_b
+                                            - quadratic_coefficient_c;
+
+                                        if intersection_discriminant_value >= 0.0 {
+                                            let distance_to_intersection_point = -quadratic_coefficient_b
+                                                - intersection_discriminant_value.sqrt();
+                                            if distance_to_intersection_point > 0.0 {
+                                                if closest_intersection_hit_data.is_none()
+                                                    || distance_to_intersection_point
+                                                        < closest_intersection_hit_data.as_ref().unwrap().2
+                                                {
+                                                    closest_intersection_hit_data = Some((
+                                                        protein_identifier_name.clone(),
+                                                        atom_global_index,
+                                                        distance_to_intersection_point,
+                                                    ));
+                                                }
                                             }
                                         }
                                     }
@@ -508,13 +518,15 @@ impl WindowState {
 
                     if let Some(protein_shared_reference) = optional_first_protein_entry {
                         let protein_locked_data = protein_shared_reference.read().unwrap();
-                        let protein_center_of_mass = protein_locked_data.center_of_mass();
-                        let (bounding_box_minimum, bounding_box_maximum) =
-                            protein_locked_data.bounding_box();
-                        let bounding_sphere_radius =
-                            (bounding_box_maximum - bounding_box_minimum).length() / 2.0;
-                        drop(protein_locked_data);
-                        camera.focus_on(protein_center_of_mass, bounding_sphere_radius);
+                        if !protein_locked_data.is_currently_loading && protein_locked_data.underlying_pdb_data.is_some() {
+                            let protein_center_of_mass = protein_locked_data.calculate_geometric_center_of_mass();
+                            let (bounding_box_minimum, bounding_box_maximum) =
+                                protein_locked_data.calculate_axis_aligned_bounding_box();
+                            let bounding_sphere_radius =
+                                (bounding_box_maximum - bounding_box_minimum).length() / 2.0;
+                            drop(protein_locked_data);
+                            camera.focus_on(protein_center_of_mass, bounding_sphere_radius);
+                        }
                     }
                 }
 
@@ -539,21 +551,22 @@ impl WindowState {
                         let mut global_atom_positions_lookup_table = std::collections::HashMap::new();
                         for protein_shared_handle in locked_protein_store.iter() {
                             let protein_locked_data = protein_shared_handle.read().unwrap();
-                            for (atom_indexing_counter, current_atom_hierarchy) in protein_locked_data
-                                .pdb
-                                .atoms_with_hierarchy()
-                                .into_iter()
-                                .enumerate()
-                            {
-                                let atom_position_tuple = current_atom_hierarchy.atom().pos();
-                                global_atom_positions_lookup_table.insert(
-                                    (protein_locked_data.name.clone(), atom_indexing_counter),
-                                    glam::Vec3::new(
-                                        atom_position_tuple.0 as f32,
-                                        atom_position_tuple.1 as f32,
-                                        atom_position_tuple.2 as f32,
-                                    ),
-                                );
+                            if let Some(pdb) = &protein_locked_data.underlying_pdb_data {
+                                for (atom_indexing_counter, current_atom_hierarchy) in pdb
+                                    .atoms_with_hierarchy()
+                                    .into_iter()
+                                    .enumerate()
+                                {
+                                    let atom_position_tuple = current_atom_hierarchy.atom().pos();
+                                    global_atom_positions_lookup_table.insert(
+                                        (protein_locked_data.display_name.clone(), atom_indexing_counter),
+                                        glam::Vec3::new(
+                                            atom_position_tuple.0 as f32,
+                                            atom_position_tuple.1 as f32,
+                                            atom_position_tuple.2 as f32,
+                                        ),
+                                    );
+                                }
                             }
                         }
 
@@ -591,6 +604,7 @@ impl WindowState {
                         protein_mutable_data
                             .molecular_surface_mesh
                             .is_surface_visible = !current_visibility_status;
+                        protein_mutable_data.structural_data_revision_number += 1;
                     }
                 }
                 _ => {}
@@ -610,7 +624,8 @@ fn set_viewport_representation(
     let locked_protein_store = viewport.store.read().unwrap();
     for protein_shared_handle in locked_protein_store.iter() {
         let mut protein_mutable_data = protein_shared_handle.write().unwrap();
-        protein_mutable_data.representation = target_representation_mode;
+        protein_mutable_data.visual_representation = target_representation_mode;
+        protein_mutable_data.structural_data_revision_number += 1;
     }
 }
 
@@ -618,7 +633,8 @@ fn set_viewport_color_scheme(viewport: &ViewportState, target_color_scheme: Colo
     let locked_protein_store = viewport.store.read().unwrap();
     for protein_shared_handle in locked_protein_store.iter() {
         let mut protein_mutable_data = protein_shared_handle.write().unwrap();
-        protein_mutable_data.color_scheme = target_color_scheme;
+        protein_mutable_data.active_color_scheme = target_color_scheme;
+        protein_mutable_data.structural_data_revision_number += 1;
     }
 }
 
@@ -632,7 +648,9 @@ struct App {
     script_engine: ScriptEngine,
     global_store: Arc<RwLock<ProteinStore>>,
     global_camera: Arc<RwLock<Camera>>,
-    script_rx: crossbeam_channel::Receiver<PathBuf>,
+    script_file_watcher_rx: crossbeam_channel::Receiver<PathBuf>,
+    script_execution_request_tx: crossbeam_channel::Sender<String>,
+    script_execution_request_rx: crossbeam_channel::Receiver<String>,
     script_event_rx: crossbeam_channel::Receiver<ScriptEvent>,
     _watcher: notify::RecommendedWatcher,
     
@@ -670,6 +688,8 @@ impl App {
                 .expect("Failed to create Lua engine");
 
         let (script_path_sender, script_path_receiver) = crossbeam_channel::unbounded::<PathBuf>();
+        let (script_exec_tx, script_exec_rx) = crossbeam_channel::unbounded::<String>();
+
         let mut file_system_watcher =
             notify::recommended_watcher(move |watcher_result: notify::Result<notify::Event>| {
                 if let Ok(notify_event) = watcher_result {
@@ -697,6 +717,10 @@ impl App {
             notify::RecursiveMode::NonRecursive,
         );
 
+        if let Some(path) = initial_script_path.clone() {
+            let _ = script_exec_tx.send(path);
+        }
+
         Self {
             instance: wgpu_instance,
             adapter: graphics_adapter,
@@ -706,7 +730,9 @@ impl App {
             script_engine: lua_script_engine,
             global_store,
             global_camera,
-            script_rx: script_path_receiver,
+            script_file_watcher_rx: script_path_receiver,
+            script_execution_request_tx: script_exec_tx,
+            script_execution_request_rx: script_exec_rx,
             script_event_rx,
             _watcher: file_system_watcher,
             active_script_path_identifier: initial_script_path.unwrap_or_else(|| "none".to_string()),
@@ -746,30 +772,34 @@ impl App {
     }
 
     fn update(&mut self, event_loop: &winit::event_loop::EventLoopWindowTarget<()>) {
-        let mut last_reloaded_path = None;
-        while let Ok(reloaded_script_path) = self.script_rx.try_recv() {
-            last_reloaded_path = Some(reloaded_script_path);
+        let mut last_recorded_modified_script_path = None;
+        while let Ok(modified_file_path) = self.script_file_watcher_rx.try_recv() {
+            last_recorded_modified_script_path = Some(modified_file_path);
         }
 
-        if let Some(reloaded_script_path) = last_reloaded_path {
-            info!("Reloading script from path: {:?}", reloaded_script_path);
-            if let Some(reloaded_script_path_string) = reloaded_script_path.to_str() {
-                self.active_script_path_identifier = reloaded_script_path_string.to_string();
-                
-                while self.script_event_rx.try_recv().is_ok() {}
+        if let Some(modified_script_path) = last_recorded_modified_script_path {
+            info!("Reloading script from path: {:?}", modified_script_path);
+            if let Some(modified_script_path_string) = modified_script_path.to_str() {
+                let _ = self.script_execution_request_tx.send(modified_script_path_string.to_string());
+            }
+        }
 
-                if let Some(current_window_state) = &mut self.window_state {
-                    current_window_state.viewports.clear();
-                    current_window_state.active_script_path_identifier = self.active_script_path_identifier.clone();
-                    current_window_state.update_window_title_with_current_state();
-                }
-                self.global_store.write().unwrap().clear();
+        // Handle script execution requests on the main thread
+        while let Ok(requested_script_path_string) = self.script_execution_request_rx.try_recv() {
+            self.active_script_path_identifier = requested_script_path_string.clone();
+            
+            // Clear old window/viewport state before re-running script
+            while self.script_event_rx.try_recv().is_ok() {}
 
-                if let Err(hot_reload_error) =
-                    self.script_engine.run_file(reloaded_script_path_string)
-                {
-                    error!("Standardized script error log: {}", hot_reload_error);
-                }
+            if let Some(current_window_state) = &mut self.window_state {
+                current_window_state.viewports.clear();
+                current_window_state.active_script_path_identifier = self.active_script_path_identifier.clone();
+                current_window_state.update_window_title_with_current_state();
+            }
+            self.global_store.write().unwrap().clear();
+
+            if let Err(script_execution_error) = self.script_engine.run_file(&requested_script_path_string) {
+                error!("Lua script execution error: {}", script_execution_error);
             }
         }
 
@@ -777,36 +807,26 @@ impl App {
 
         if let Some(current_window_state) = &mut self.window_state {
             current_window_state.update();
+            current_window_state.update_window_title_with_current_state();
         }
     }
 }
 
-async fn run(initial_script: Option<String>) {
+async fn run(initial_script_path_option: Option<String>) {
     let main_event_loop = EventLoop::new().unwrap();
-    let mut app = App::new(initial_script.clone()).await;
-
-    if let Some(provided_initial_script_path) = initial_script {
-        if let Err(script_execution_error) =
-            app.script_engine.run_file(&provided_initial_script_path)
-        {
-            error!(
-                "Error running explicitly provided script {}: {}",
-                provided_initial_script_path, script_execution_error
-            );
-        }
-    }
+    let mut application_instance = App::new(initial_script_path_option).await;
 
     main_event_loop.set_control_flow(ControlFlow::Poll);
     let _ = main_event_loop.run(move |winit_event, event_loop_window_target| {
         match winit_event {
             Event::WindowEvent { window_id: _, event } => {
-                if let Some(window_state) = app.window_state.as_mut() {
+                if let Some(window_state) = application_instance.window_state.as_mut() {
                     match event {
                         WindowEvent::CloseRequested => {
                             event_loop_window_target.exit();
                         }
                         WindowEvent::Resized(new_window_size) => {
-                            window_state.resize(&app.device, new_window_size)
+                            window_state.resize(&application_instance.device, new_window_size)
                         }
                         WindowEvent::MouseInput { state, button, .. } => {
                             window_state.handle_mouse_input(state, button)
@@ -815,11 +835,11 @@ async fn run(initial_script: Option<String>) {
                             window_state.handle_mouse_move((position.x, position.y))
                         }
                         WindowEvent::MouseWheel { delta, .. } => {
-                            let scroll = match delta {
+                            let scroll_magnitude = match delta {
                                 MouseScrollDelta::LineDelta(_, y) => y,
                                 MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 100.0,
                             };
-                            window_state.handle_scroll(scroll);
+                            window_state.handle_scroll(scroll_magnitude);
                         }
                         WindowEvent::KeyboardInput {
                             event:
@@ -830,23 +850,23 @@ async fn run(initial_script: Option<String>) {
                                 },
                             ..
                         } => window_state.handle_key(code),
-                        WindowEvent::RedrawRequested => match window_state.render(&app.queue) {
+                        WindowEvent::RedrawRequested => match window_state.render(&application_instance.queue) {
                             Ok(_) => {}
                             Err(wgpu::SurfaceError::Lost) => {
-                                window_state.resize(&app.device, window_state.window.inner_size())
+                                window_state.resize(&application_instance.device, window_state.window.inner_size())
                             }
                             Err(wgpu::SurfaceError::OutOfMemory) => {
                                 event_loop_window_target.exit();
                             }
-                            Err(e) => error!("Standardized render error log: {:?}", e),
+                            Err(render_error) => error!("Renderer error: {:?}", render_error),
                         },
                         _ => {}
                     }
                 }
             }
             Event::AboutToWait => {
-                app.update(event_loop_window_target);
-                if let Some(ws) = &app.window_state {
+                application_instance.update(event_loop_window_target);
+                if let Some(ws) = &application_instance.window_state {
                     ws.window.request_redraw();
                 }
             }

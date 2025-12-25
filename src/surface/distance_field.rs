@@ -64,7 +64,7 @@ pub fn calculate_solvent_accessible_distance_field(
     desired_voxel_size: f32,
     grid_padding_in_angstroms: f32,
 ) -> DistanceFieldGrid {
-    let (minimum_bounding_bound, maximum_bounding_bound) = protein_data_reference.bounding_box();
+    let (minimum_bounding_bound, maximum_bounding_bound) = protein_data_reference.calculate_axis_aligned_bounding_box();
     let padded_grid_minimum = minimum_bounding_bound - Vec3::splat(grid_padding_in_angstroms);
     let padded_grid_maximum = maximum_bounding_bound + Vec3::splat(grid_padding_in_angstroms);
     let total_grid_size_vector = padded_grid_maximum - padded_grid_minimum;
@@ -77,29 +77,31 @@ pub fn calculate_solvent_accessible_distance_field(
     let mut atom_world_positions_collection = Vec::new();
     let mut atom_vdw_radii_collection = Vec::new();
 
-    for current_atom_reference in protein_data_reference.pdb.atoms() {
-        let atom_position_tuple = current_atom_reference.pos();
-        atom_world_positions_collection.push(Vec3::new(
-            atom_position_tuple.0 as f32,
-            atom_position_tuple.1 as f32,
-            atom_position_tuple.2 as f32,
-        ));
+    if let Some(pdb) = &protein_data_reference.underlying_pdb_data {
+        for current_atom_reference in pdb.atoms() {
+            let atom_position_tuple = current_atom_reference.pos();
+            atom_world_positions_collection.push(Vec3::new(
+                atom_position_tuple.0 as f32,
+                atom_position_tuple.1 as f32,
+                atom_position_tuple.2 as f32,
+            ));
 
-        let current_atom_element_symbol = current_atom_reference
-            .element()
-            .map(|element_reference| element_reference.symbol())
-            .unwrap_or("?");
+            let current_atom_element_symbol = current_atom_reference
+                .element()
+                .map(|element_reference| element_reference.symbol())
+                .unwrap_or("?");
 
-        let vdw_radius_value = match current_atom_element_symbol {
-            "H" => 1.20,
-            "C" => 1.70,
-            "N" => 1.55,
-            "O" => 1.52,
-            "S" => 1.80,
-            "P" => 1.80,
-            _ => 1.50,
-        };
-        atom_vdw_radii_collection.push(vdw_radius_value);
+            let vdw_radius_value = match current_atom_element_symbol {
+                "H" => 1.20,
+                "C" => 1.70,
+                "N" => 1.55,
+                "O" => 1.52,
+                "S" => 1.80,
+                "P" => 1.80,
+                _ => 1.50,
+            };
+            atom_vdw_radii_collection.push(vdw_radius_value);
+        }
     }
 
     // Use Rayon to calculate slices of the grid in parallel

@@ -31,9 +31,9 @@ pub fn export_protein_analysis_to_json(
     protein_data: &ProteinData,
     file_system_path: &str,
 ) -> Result<(), String> {
-    let (min_bound, max_bound) = protein_data.bounding_box();
+    let (min_bound, max_bound) = protein_data.calculate_axis_aligned_bounding_box();
     let bbox_size = max_bound - min_bound;
-    let com = protein_data.center_of_mass();
+    let com = protein_data.calculate_geometric_center_of_mass();
 
     let dihedrals = crate::analysis::dihedrals::calculate_all_backbone_dihedrals(protein_data);
     
@@ -50,9 +50,9 @@ pub fn export_protein_analysis_to_json(
     }
 
     let report_data = ProteinAnalysisReport {
-        protein_name: protein_data.name.clone(),
-        total_atom_count: protein_data.atom_count(),
-        chain_identifiers: protein_data.chain_ids(),
+        protein_name: protein_data.display_name.clone(),
+        total_atom_count: protein_data.get_total_atom_count(),
+        chain_identifiers: protein_data.get_all_chain_identifiers(),
         center_of_mass_coordinates: [com.x, com.y, com.z],
         bounding_box_dimensions: [bbox_size.x, bbox_size.y, bbox_size.z],
         residues: residue_entries,

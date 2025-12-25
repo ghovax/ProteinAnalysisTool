@@ -28,41 +28,43 @@ pub fn detect_salt_bridge_interactions(
 ) -> Vec<SaltBridgeInteraction> {
     let mut identified_salt_bridges = Vec::new();
 
-    // Positively charged atoms (Arg NH1/NH2, Lys NZ)
-    let positively_charged_atoms: Vec<_> = protein_data.pdb.atoms_with_hierarchy()
-        .filter(|h| {
-            let res_name = h.residue().name().unwrap_or("");
-            let atom_name = h.atom().name();
-            (res_name == "ARG" && (atom_name == "NH1" || atom_name == "NH2")) ||
-            (res_name == "LYS" && atom_name == "NZ")
-        })
-        .map(|h| (h.atom().pos(), h.atom().serial_number())) // Use serial number as index proxy if needed
-        .collect();
+    if let Some(pdb) = &protein_data.underlying_pdb_data {
+        // Positively charged atoms (Arg NH1/NH2, Lys NZ)
+        let positively_charged_atoms: Vec<_> = pdb.atoms_with_hierarchy()
+            .filter(|h| {
+                let res_name = h.residue().name().unwrap_or("");
+                let atom_name = h.atom().name();
+                (res_name == "ARG" && (atom_name == "NH1" || atom_name == "NH2")) ||
+                (res_name == "LYS" && atom_name == "NZ")
+            })
+            .map(|h| (h.atom().pos(), h.atom().serial_number())) // Use serial number as index proxy if needed
+            .collect();
 
-    // Negatively charged atoms (Asp OD1/OD2, Glu OE1/OE2)
-    let negatively_charged_atoms: Vec<_> = protein_data.pdb.atoms_with_hierarchy()
-        .filter(|h| {
-            let res_name = h.residue().name().unwrap_or("");
-            let atom_name = h.atom().name();
-            (res_name == "ASP" && (atom_name == "OD1" || atom_name == "OD2")) ||
-            (res_name == "GLU" && (atom_name == "OE1" || atom_name == "OE2"))
-        })
-        .map(|h| (h.atom().pos(), h.atom().serial_number()))
-        .collect();
+        // Negatively charged atoms (Asp OD1/OD2, Glu OE1/OE2)
+        let negatively_charged_atoms: Vec<_> = pdb.atoms_with_hierarchy()
+            .filter(|h| {
+                let res_name = h.residue().name().unwrap_or("");
+                let atom_name = h.atom().name();
+                (res_name == "ASP" && (atom_name == "OD1" || atom_name == "OD2")) ||
+                (res_name == "GLU" && (atom_name == "OE1" || atom_name == "OE2"))
+            })
+            .map(|h| (h.atom().pos(), h.atom().serial_number()))
+            .collect();
 
-    let threshold_squared = distance_threshold_angstroms * distance_threshold_angstroms;
+        let threshold_squared = distance_threshold_angstroms * distance_threshold_angstroms;
 
-    for (pos_coord, pos_idx) in &positively_charged_atoms {
-        let pos_vec = Vec3::new(pos_coord.0 as f32, pos_coord.1 as f32, pos_coord.2 as f32);
-        for (neg_coord, neg_idx) in &negatively_charged_atoms {
-            let neg_vec = Vec3::new(neg_coord.0 as f32, neg_coord.1 as f32, neg_coord.2 as f32);
-            let dist_sq = pos_vec.distance_squared(neg_vec);
-            if dist_sq < threshold_squared {
-                identified_salt_bridges.push(SaltBridgeInteraction {
-                    donor_atom_index: *pos_idx as usize,
-                    acceptor_atom_index: *neg_idx as usize,
-                    inter_atomic_distance: dist_sq.sqrt(),
-                });
+        for (pos_coord, pos_idx) in &positively_charged_atoms {
+            let pos_vec = Vec3::new(pos_coord.0 as f32, pos_coord.1 as f32, pos_coord.2 as f32);
+            for (neg_coord, neg_idx) in &negatively_charged_atoms {
+                let neg_vec = Vec3::new(neg_coord.0 as f32, neg_coord.1 as f32, neg_coord.2 as f32);
+                let dist_sq = pos_vec.distance_squared(neg_vec);
+                if dist_sq < threshold_squared {
+                    identified_salt_bridges.push(SaltBridgeInteraction {
+                        donor_atom_index: *pos_idx as usize,
+                        acceptor_atom_index: *neg_idx as usize,
+                        inter_atomic_distance: dist_sq.sqrt(),
+                    });
+                }
             }
         }
     }

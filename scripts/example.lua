@@ -6,7 +6,6 @@
 local reference_protein = pdb.fetch_protein_from_rcsb("1YYF")
 local moving_protein = pdb.fetch_protein_from_rcsb("1YYF")
 pdb.fetch_protein_from_rcsb("1UBQ")
-pdb.fetch_protein_from_rcsb("9P9K")
 
 -- 2. Setting up initial visual representations
 reference_protein:set_representation_mode("ball_and_stick")
@@ -60,12 +59,19 @@ local ramachandran_analysis_data = reference_protein:calculate_ramachandran_dihe
 if #ramachandran_analysis_data > 0 then
     local first_residue_entry = ramachandran_analysis_data[1]
     print("Analysis for residue: index " .. first_residue_entry.residue_number)
-    print("Resulting residue's angles: Phi: " .. string.format("%.2f", first_residue_entry.phi) .. "°, Psi: " .. string.format("%.2f", first_residue_entry.psi) .. "°")
+    print("Angles:")
+    print("  Phi: " .. string.format("%.2f", first_residue_entry.phi) .. "°, Psi: " .. string.format("%.2f", first_residue_entry.psi) .. "°")
 end
 
 -- 8. Testing New Advanced Toolkit Features
 
-print("\n--- Advanced Toolkit Features ---")
+-- Protein Summary Table
+local summary = reference_protein:get_summary_information()
+print("Protein Summary Data:")
+print("  Name: " .. summary.name)
+print("  Atoms: " .. summary.atom_count)
+print("  Residues: " .. summary.residue_count)
+print(string.format("  Dimensions: %.1f x %.1f x %.1f A", summary.size.x, summary.size.y, summary.size.z))
 
 -- SASA Calculation
 local sasa_value = reference_protein:calculate_solvent_accessible_surface_area()
@@ -102,3 +108,5 @@ print("Generated FASTA header: " .. fasta_data:sub(1, 20) .. "...")
 -- 9. Camera and Session Control
 camera.set_camera_focus_target(0.0, 0.0, 0.0)
 camera.set_camera_spherical_parameters(75.0, 0.8, 0.4)
+
+pdb.fetch_protein_from_rcsb("9P9K")

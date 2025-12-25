@@ -130,6 +130,13 @@ struct ViewportResources {
     surface_indices_count: u32,
     line_vertex_buffer: wgpu::Buffer,
     line_vertex_count: u32,
+
+    /// Cache of protein structural revision identifiers last used to generate these buffers
+    cached_structural_revision_identifiers: HashMap<String, usize>,
+    /// Cache of atom selection identifiers last used to generate these buffers
+    cached_atom_selection_state: Vec<(String, usize)>,
+    /// Cache of measurement pair indices last used to generate these buffers
+    cached_measurement_pair_state: Vec<(usize, usize)>,
 }
 
 /// The main protein renderer
@@ -222,6 +229,9 @@ impl Renderer {
             surface_indices_count: 0,
             line_vertex_buffer,
             line_vertex_count: 0,
+            cached_structural_revision_identifiers: HashMap::new(),
+            cached_atom_selection_state: Vec::new(),
+            cached_measurement_pair_state: Vec::new(),
         }
     }
 
@@ -553,6 +563,29 @@ impl Renderer {
         currently_selected_atoms: &[(String, usize)],
         active_measurement_pairs: &[(usize, usize)],
     ) {
+        // Optimization: Check if structural revisions or selections have changed
+        let mut has_structural_revision_changed = currently_selected_atoms != viewport_resource_handle.cached_atom_selection_state ||
+                                                   active_measurement_pairs != viewport_resource_handle.cached_measurement_pair_state;
+        
+        if !has_structural_revision_changed {
+            for protein_shared_handle in protein_data_store.iter() {
+                let protein_locked_data = protein_shared_handle.read().unwrap();
+                let last_cached_revision = viewport_resource_handle.cached_structural_revision_identifiers
+                    .get(&protein_locked_data.display_name)
+                    .copied()
+                    .unwrap_or(0);
+                if protein_locked_data.structural_data_revision_number != last_cached_revision {
+                    has_structural_revision_changed = true;
+                    break;
+                }
+            }
+        }
+
+        // Only rebuild buffers if necessary
+        if !has_structural_revision_changed && viewport_resource_handle.cached_structural_revision_identifiers.len() == protein_data_store.list().len() {
+            return;
+        }
+
         let mut sphere_instances_collection = Vec::new();
         let mut cylinder_instances_collection = Vec::new();
         let mut surface_vertices_collection = Vec::new();
@@ -560,12 +593,23 @@ impl Renderer {
         let mut line_vertices_collection = Vec::new();
 
         let mut atom_world_positions_lookup_table = HashMap::new();
+        let mut current_structural_revision_cache = HashMap::new();
 
         for protein_shared_reference in protein_data_store.iter() {
             let protein_locked_data = protein_shared_reference.read().unwrap();
-            if !protein_locked_data.visible {
+            current_structural_revision_cache.insert(
+                protein_locked_data.display_name.clone(), 
+                protein_locked_data.structural_data_revision_number
+            );
+
+            if !protein_locked_data.is_visible || protein_locked_data.is_currently_loading {
                 continue;
             }
+
+            let pdb = match &protein_locked_data.underlying_pdb_data {
+                Some(p) => p,
+                None => continue,
+            };
 
             // Update surface data if present and visible
             if protein_locked_data
@@ -587,14 +631,14 @@ impl Renderer {
                 }
             }
 
-            let protein_identifier_name = &protein_locked_data.name;
-            let available_chain_identifiers_collection: Vec<_> = protein_locked_data.chain_ids();
-            let active_representation_mode = protein_locked_data.representation;
-            let active_color_scheme_mode = protein_locked_data.color_scheme;
+            let protein_identifier_name = &protein_locked_data.display_name;
+            let available_chain_identifiers_collection: Vec<_> = protein_locked_data.get_all_chain_identifiers();
+            let active_representation_mode = protein_locked_data.visual_representation;
+            let active_color_scheme_mode = protein_locked_data.active_color_scheme;
 
             // Get B-factor range for normalization during coloring
             let (minimum_bfactor_value, maximum_bfactor_value) =
-                protein_locked_data.calculate_bfactor_range();
+                protein_locked_data.calculate_bfactor_range_in_structure();
 
             // Helper to get color for a specific chain identifier
             let get_color_for_chain_identifier = |chain_id_string: &str| -> [f32; 3] {
@@ -631,7 +675,7 @@ impl Renderer {
             // Pre-calculate atom data
             let mut protein_atom_data_list = Vec::new();
             for (atom_index, atom_hierarchy) in
-                protein_locked_data.pdb.atoms_with_hierarchy().enumerate()
+                pdb.atoms_with_hierarchy().enumerate()
             {
                 let atom_reference = atom_hierarchy.atom();
                 let position_tuple = atom_reference.pos();
@@ -649,13 +693,11 @@ impl Renderer {
                 let chain_id = atom_hierarchy.chain().id();
                 let residue_number = atom_hierarchy.residue().serial_number();
 
-                let secondary_structure_type = if protein_locked_data
-                    .pdb
+                let secondary_structure_type = if pdb
                     .is_residue_in_helix(chain_id, residue_number)
                 {
                     crate::protein::structure::SecondaryStructureType::Helix
-                } else if protein_locked_data
-                    .pdb
+                } else if pdb
                     .is_residue_in_sheet(chain_id, residue_number)
                 {
                     crate::protein::structure::SecondaryStructureType::Sheet
@@ -994,6 +1036,11 @@ impl Renderer {
                 );
             }
         }
+
+        // Update cache state
+        viewport_resource_handle.cached_structural_revision_identifiers = current_structural_revision_cache;
+        viewport_resource_handle.cached_atom_selection_state = currently_selected_atoms.to_vec();
+        viewport_resource_handle.cached_measurement_pair_state = active_measurement_pairs.to_vec();
     }
 
     /// Encodes and returns a command buffer for rendering multiple viewports
