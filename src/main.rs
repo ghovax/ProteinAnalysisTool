@@ -51,6 +51,8 @@ struct WindowState {
 
     /// Whether the left mouse button is currently pressed
     mouse_pressed: bool,
+    /// Whether the right mouse button is currently pressed
+    right_mouse_button_is_pressed: bool,
     /// The last recorded mouse position for rotation calculations
     last_recorded_mouse_cursor_position: Option<(f64, f64)>,
 }
@@ -109,6 +111,7 @@ impl WindowState {
             selected_atoms: Vec::new(),
             measurements: Vec::new(),
             mouse_pressed: false,
+            right_mouse_button_is_pressed: false,
             last_recorded_mouse_cursor_position: None,
         }
     }
@@ -209,20 +212,13 @@ impl WindowState {
             }
         }
 
-        // Add protein information labels for the UI overlay
+        // Log protein information to terminal instead of screen
         {
             let locked_protein_store = self.store.read().unwrap();
             for protein_shared_handle in locked_protein_store.iter() {
                 let protein_locked_data = protein_shared_handle.read().unwrap();
-                text_labels_collection.push(renderer::pipeline::TextLabel {
-                    position: glam::Vec3::ZERO, // UI labels use special screen-space positioning
-                    text: format!(
-                        "Protein: {} ({} atoms)",
-                        protein_locked_data.name,
-                        protein_locked_data.atom_count()
-                    ),
-                    color: [1.0, 1.0, 1.0, 1.0],
-                });
+                // We could log this periodically, but for now we'll just not add it to text_labels_collection
+                // to keep the terminal clean unless explicitly requested.
             }
         }
 
@@ -245,119 +241,127 @@ impl WindowState {
         element_press_state: ElementState,
         mouse_button_identifier: MouseButton,
     ) {
-        if mouse_button_identifier == MouseButton::Left {
-            let was_previously_pressed = self.mouse_pressed;
-            self.mouse_pressed = element_press_state == ElementState::Pressed;
+        match mouse_button_identifier {
+            MouseButton::Left => {
+                let was_previously_pressed = self.mouse_pressed;
+                self.mouse_pressed = element_press_state == ElementState::Pressed;
 
-            // Only perform ray casting on the initial press (click)
-            if self.mouse_pressed && !was_previously_pressed {
-                if let Some((current_mouse_x_coordinate, current_mouse_y_coordinate)) =
-                    self.last_recorded_mouse_cursor_position
-                {
-                    let (ray_origin_point, ray_direction_unit_vector) =
-                        self.camera.read().unwrap().calculate_ray_from_screen_coordinates(
-                            glam::Vec2::new(
-                                current_mouse_x_coordinate as f32,
-                                current_mouse_y_coordinate as f32,
-                            ),
-                            glam::Vec2::new(self.config.width as f32, self.config.height as f32),
-                        );
-
-                    let mut closest_intersection_hit_data: Option<(String, usize, f32)> = None;
-
-                    let locked_protein_store = self.store.read().unwrap();
-                    for protein_shared_handle in locked_protein_store.iter() {
-                        let protein_locked_data = protein_shared_handle.read().unwrap();
-                        let protein_identifier_name = protein_locked_data.name.clone();
-                        
-                        let current_representation_mode = protein_locked_data.representation;
-                        
-                        // Use appropriate hit-box radius based on visual representation
-                        let base_sphere_hitbox_radius = match current_representation_mode {
-                            Representation::Spheres | Representation::BackboneAndSpheres => 1.5,
-                            Representation::BallAndStick => 0.4,
-                            Representation::SpaceFilling => 1.7,
-                            _ => 1.0, // Fallback for modes without primary spheres
-                        };
-
-                        // Check ALL atoms for intersection, matching the renderer's indexing
-                        for (atom_global_index, current_atom_hierarchy) in
-                            protein_locked_data.pdb.atoms_with_hierarchy().into_iter().enumerate()
-                        {
-                            let current_atom_reference = current_atom_hierarchy.atom();
-                            
-                            // If in CA-only mode, skip non-CA atoms for consistency with visualization
-                            if matches!(current_representation_mode, Representation::Spheres | Representation::BackboneAndSpheres) 
-                               && current_atom_reference.name() != "CA" {
-                                continue;
-                            }
-
-                            let atom_position_tuple = current_atom_reference.pos();
-                            let atom_world_position_vector = glam::Vec3::new(
-                                atom_position_tuple.0 as f32,
-                                atom_position_tuple.1 as f32,
-                                atom_position_tuple.2 as f32
+                // Only perform ray casting on the initial press (click)
+                if self.mouse_pressed && !was_previously_pressed {
+                    if let Some((current_mouse_x_coordinate, current_mouse_y_coordinate)) =
+                        self.last_recorded_mouse_cursor_position
+                    {
+                        let (ray_origin_point, ray_direction_unit_vector) =
+                            self.camera.read().unwrap().calculate_ray_from_screen_coordinates(
+                                glam::Vec2::new(
+                                    current_mouse_x_coordinate as f32,
+                                    current_mouse_y_coordinate as f32,
+                                ),
+                                glam::Vec2::new(self.config.width as f32, self.config.height as f32),
                             );
 
-                            let vector_from_ray_origin_to_atom_center =
-                                ray_origin_point - atom_world_position_vector;
-                            
-                            let quadratic_coefficient_b = vector_from_ray_origin_to_atom_center
-                                .dot(ray_direction_unit_vector);
-                            let quadratic_coefficient_c = vector_from_ray_origin_to_atom_center
-                                .dot(vector_from_ray_origin_to_atom_center)
-                                - base_sphere_hitbox_radius * base_sphere_hitbox_radius;
-                            
-                            let intersection_discriminant_value = quadratic_coefficient_b
-                                * quadratic_coefficient_b
-                                - quadratic_coefficient_c;
+                        let mut closest_intersection_hit_data: Option<(String, usize, f32)> = None;
 
-                            if intersection_discriminant_value >= 0.0 {
-                                let distance_to_intersection_point = -quadratic_coefficient_b
-                                    - intersection_discriminant_value.sqrt();
-                                if distance_to_intersection_point > 0.0 {
-                                    if closest_intersection_hit_data.is_none()
-                                        || distance_to_intersection_point
-                                            < closest_intersection_hit_data.as_ref().unwrap().2
-                                    {
-                                        closest_intersection_hit_data = Some((
-                                            protein_identifier_name.clone(),
-                                            atom_global_index,
-                                            distance_to_intersection_point,
-                                        ));
+                        let locked_protein_store = self.store.read().unwrap();
+                        for protein_shared_handle in locked_protein_store.iter() {
+                            let protein_locked_data = protein_shared_handle.read().unwrap();
+                            let protein_identifier_name = protein_locked_data.name.clone();
+                            
+                            let current_representation_mode = protein_locked_data.representation;
+                            
+                            let base_sphere_hitbox_radius = match current_representation_mode {
+                                Representation::Spheres | Representation::BackboneAndSpheres => 1.5,
+                                Representation::BallAndStick => 0.4,
+                                Representation::SpaceFilling => 1.7,
+                                _ => 1.0,
+                            };
+
+                            for (atom_global_index, current_atom_hierarchy) in
+                                protein_locked_data.pdb.atoms_with_hierarchy().into_iter().enumerate()
+                            {
+                                let current_atom_reference = current_atom_hierarchy.atom();
+                                
+                                if matches!(current_representation_mode, Representation::Spheres | Representation::BackboneAndSpheres) 
+                                   && current_atom_reference.name() != "CA" {
+                                    continue;
+                                }
+
+                                let atom_position_tuple = current_atom_reference.pos();
+                                let atom_world_position_vector = glam::Vec3::new(
+                                    atom_position_tuple.0 as f32,
+                                    atom_position_tuple.1 as f32,
+                                    atom_position_tuple.2 as f32
+                                );
+
+                                let vector_from_ray_origin_to_atom_center =
+                                    ray_origin_point - atom_world_position_vector;
+                                
+                                let quadratic_coefficient_b = vector_from_ray_origin_to_atom_center
+                                    .dot(ray_direction_unit_vector);
+                                let quadratic_coefficient_c = vector_from_ray_origin_to_atom_center
+                                    .dot(vector_from_ray_origin_to_atom_center)
+                                    - base_sphere_hitbox_radius * base_sphere_hitbox_radius;
+                                
+                                let intersection_discriminant_value = quadratic_coefficient_b
+                                    * quadratic_coefficient_b
+                                    - quadratic_coefficient_c;
+
+                                if intersection_discriminant_value >= 0.0 {
+                                    let distance_to_intersection_point = -quadratic_coefficient_b
+                                        - intersection_discriminant_value.sqrt();
+                                    if distance_to_intersection_point > 0.0 {
+                                        if closest_intersection_hit_data.is_none()
+                                            || distance_to_intersection_point
+                                                < closest_intersection_hit_data.as_ref().unwrap().2
+                                        {
+                                            closest_intersection_hit_data = Some((
+                                                protein_identifier_name.clone(),
+                                                atom_global_index,
+                                                distance_to_intersection_point,
+                                            ));
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    if let Some((hit_protein_name, hit_atom_index, _)) =
-                        closest_intersection_hit_data
-                    {
-                        let target_atom_selection_identifier = (hit_protein_name, hit_atom_index);
-                        if self.selected_atoms.contains(&target_atom_selection_identifier) {
-                            // Toggle selection off if already selected
-                            self.selected_atoms.retain(|item| item != &target_atom_selection_identifier);
-                        } else {
-                            self.selected_atoms.push(target_atom_selection_identifier);
+                        if let Some((hit_protein_name, hit_atom_index, _)) =
+                            closest_intersection_hit_data
+                        {
+                            let target_atom_selection_identifier = (hit_protein_name, hit_atom_index);
+                            if self.selected_atoms.contains(&target_atom_selection_identifier) {
+                                self.selected_atoms.retain(|item| item != &target_atom_selection_identifier);
+                            } else {
+                                self.selected_atoms.push(target_atom_selection_identifier);
+                            }
                         }
                     }
                 }
             }
+            MouseButton::Right => {
+                self.right_mouse_button_is_pressed = element_press_state == ElementState::Pressed;
+            }
+            _ => {}
         }
     }
 
     fn handle_mouse_move(&mut self, cursor_screen_position: (f64, f64)) {
-        if self.mouse_pressed {
-            if let Some((previous_mouse_x, previous_mouse_y)) = self.last_recorded_mouse_cursor_position {
-                let mouse_movement_delta_x =
-                    (cursor_screen_position.0 - previous_mouse_x) as f32 * 0.01;
-                let mouse_movement_delta_y =
-                    (cursor_screen_position.1 - previous_mouse_y) as f32 * 0.01;
+        if let Some((previous_mouse_x, previous_mouse_y)) = self.last_recorded_mouse_cursor_position {
+            let mouse_movement_delta_x =
+                (cursor_screen_position.0 - previous_mouse_x) as f32;
+            let mouse_movement_delta_y =
+                (cursor_screen_position.1 - previous_mouse_y) as f32;
+
+            if self.mouse_pressed {
                 self.camera
                     .write()
                     .unwrap()
-                    .rotate(-mouse_movement_delta_x, mouse_movement_delta_y);
+                    .rotate(-mouse_movement_delta_x * 0.01, mouse_movement_delta_y * 0.01);
+            } else if self.right_mouse_button_is_pressed {
+                self.camera
+                    .write()
+                    .unwrap()
+                    .translate_camera_target_position(mouse_movement_delta_x, mouse_movement_delta_y);
             }
         }
         self.last_recorded_mouse_cursor_position = Some(cursor_screen_position);

@@ -87,6 +87,18 @@ impl Camera {
         self.distance = radius * 2.5;
     }
 
+    /// Translates the camera target position along the camera's local axes
+    pub fn translate_camera_target_position(&mut self, horizontal_delta: f32, vertical_delta: f32) {
+        let rotation_matrix = Mat4::from_euler(glam::EulerRot::YXZ, self.yaw, self.pitch, 0.0);
+        let camera_right_vector = rotation_matrix.transform_vector3(Vec3::X);
+        let camera_up_vector = rotation_matrix.transform_vector3(Vec3::Y);
+
+        // Scale translation speed by distance to target for consistent feel
+        let translation_speed_scaling_factor = self.distance * 0.0005;
+        self.target += camera_right_vector * -horizontal_delta * translation_speed_scaling_factor;
+        self.target += camera_up_vector * vertical_delta * translation_speed_scaling_factor;
+    }
+
     /// Generates a ray in world space from screen coordinates
     pub fn calculate_ray_from_screen_coordinates(
         &self,

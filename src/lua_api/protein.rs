@@ -372,7 +372,7 @@ impl UserData for LuaProtein {
                     transformed_position_vector.x as f64,
                     transformed_position_vector.y as f64,
                     transformed_position_vector.z as f64
-                ));
+                )).unwrap();
             }
             
             Ok(())
