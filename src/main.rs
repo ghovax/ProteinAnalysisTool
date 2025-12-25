@@ -12,6 +12,7 @@ mod surface;
 
 use clap::Parser;
 use notify::Watcher;
+use pdbtbx::ContainsAtomConformer;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -51,7 +52,7 @@ struct WindowState {
     /// Whether the left mouse button is currently pressed
     mouse_pressed: bool,
     /// The last recorded mouse position for rotation calculations
-    last_mouse_pos: Option<(f64, f64)>,
+    last_recorded_mouse_cursor_position: Option<(f64, f64)>,
 }
 
 impl WindowState {
@@ -108,7 +109,7 @@ impl WindowState {
             selected_atoms: Vec::new(),
             measurements: Vec::new(),
             mouse_pressed: false,
-            last_mouse_pos: None,
+            last_recorded_mouse_cursor_position: None,
         }
     }
 
@@ -245,15 +246,16 @@ impl WindowState {
         mouse_button_identifier: MouseButton,
     ) {
         if mouse_button_identifier == MouseButton::Left {
+            let was_previously_pressed = self.mouse_pressed;
             self.mouse_pressed = element_press_state == ElementState::Pressed;
 
-            if self.mouse_pressed {
-                // Ray casting for selection
+            // Only perform ray casting on the initial press (click)
+            if self.mouse_pressed && !was_previously_pressed {
                 if let Some((current_mouse_x_coordinate, current_mouse_y_coordinate)) =
-                    self.last_mouse_pos
+                    self.last_recorded_mouse_cursor_position
                 {
                     let (ray_origin_point, ray_direction_unit_vector) =
-                        self.camera.read().unwrap().ray_from_screen(
+                        self.camera.read().unwrap().calculate_ray_from_screen_coordinates(
                             glam::Vec2::new(
                                 current_mouse_x_coordinate as f32,
                                 current_mouse_y_coordinate as f32,
@@ -267,23 +269,45 @@ impl WindowState {
                     for protein_shared_handle in locked_protein_store.iter() {
                         let protein_locked_data = protein_shared_handle.read().unwrap();
                         let protein_identifier_name = protein_locked_data.name.clone();
+                        
+                        let current_representation_mode = protein_locked_data.representation;
+                        
+                        // Use appropriate hit-box radius based on visual representation
+                        let base_sphere_hitbox_radius = match current_representation_mode {
+                            Representation::Spheres | Representation::BackboneAndSpheres => 1.5,
+                            Representation::BallAndStick => 0.4,
+                            Representation::SpaceFilling => 1.7,
+                            _ => 1.0, // Fallback for modes without primary spheres
+                        };
 
-                        // Check Alpha Carbon (CA) atoms for intersection
-                        let alpha_carbon_positions_and_chain_identifiers_collection =
-                            protein_locked_data.get_alpha_carbon_positions_and_chain_identifiers();
-                        for (atom_indexing_counter, (atom_world_position, _chain_identifier)) in
-                            alpha_carbon_positions_and_chain_identifiers_collection
-                                .into_iter()
-                                .enumerate()
+                        // Check ALL atoms for intersection, matching the renderer's indexing
+                        for (atom_global_index, current_atom_hierarchy) in
+                            protein_locked_data.pdb.atoms_with_hierarchy().into_iter().enumerate()
                         {
-                            let sphere_intersection_radius = 1.5; // Same radius as used in the renderer
+                            let current_atom_reference = current_atom_hierarchy.atom();
+                            
+                            // If in CA-only mode, skip non-CA atoms for consistency with visualization
+                            if matches!(current_representation_mode, Representation::Spheres | Representation::BackboneAndSpheres) 
+                               && current_atom_reference.name() != "CA" {
+                                continue;
+                            }
+
+                            let atom_position_tuple = current_atom_reference.pos();
+                            let atom_world_position_vector = glam::Vec3::new(
+                                atom_position_tuple.0 as f32,
+                                atom_position_tuple.1 as f32,
+                                atom_position_tuple.2 as f32
+                            );
+
                             let vector_from_ray_origin_to_atom_center =
-                                ray_origin_point - atom_world_position;
+                                ray_origin_point - atom_world_position_vector;
+                            
                             let quadratic_coefficient_b = vector_from_ray_origin_to_atom_center
                                 .dot(ray_direction_unit_vector);
                             let quadratic_coefficient_c = vector_from_ray_origin_to_atom_center
                                 .dot(vector_from_ray_origin_to_atom_center)
-                                - sphere_intersection_radius * sphere_intersection_radius;
+                                - base_sphere_hitbox_radius * base_sphere_hitbox_radius;
+                            
                             let intersection_discriminant_value = quadratic_coefficient_b
                                 * quadratic_coefficient_b
                                 - quadratic_coefficient_c;
@@ -298,7 +322,7 @@ impl WindowState {
                                     {
                                         closest_intersection_hit_data = Some((
                                             protein_identifier_name.clone(),
-                                            atom_indexing_counter,
+                                            atom_global_index,
                                             distance_to_intersection_point,
                                         ));
                                     }
@@ -311,25 +335,21 @@ impl WindowState {
                         closest_intersection_hit_data
                     {
                         let target_atom_selection_identifier = (hit_protein_name, hit_atom_index);
-                        if !self
-                            .selected_atoms
-                            .contains(&target_atom_selection_identifier)
-                        {
+                        if self.selected_atoms.contains(&target_atom_selection_identifier) {
+                            // Toggle selection off if already selected
+                            self.selected_atoms.retain(|item| item != &target_atom_selection_identifier);
+                        } else {
                             self.selected_atoms.push(target_atom_selection_identifier);
                         }
                     }
                 }
-            }
-
-            if !self.mouse_pressed {
-                self.last_mouse_pos = None;
             }
         }
     }
 
     fn handle_mouse_move(&mut self, cursor_screen_position: (f64, f64)) {
         if self.mouse_pressed {
-            if let Some((previous_mouse_x, previous_mouse_y)) = self.last_mouse_pos {
+            if let Some((previous_mouse_x, previous_mouse_y)) = self.last_recorded_mouse_cursor_position {
                 let mouse_movement_delta_x =
                     (cursor_screen_position.0 - previous_mouse_x) as f32 * 0.01;
                 let mouse_movement_delta_y =
@@ -340,7 +360,7 @@ impl WindowState {
                     .rotate(-mouse_movement_delta_x, mouse_movement_delta_y);
             }
         }
-        self.last_mouse_pos = Some(cursor_screen_position);
+        self.last_recorded_mouse_cursor_position = Some(cursor_screen_position);
     }
 
     fn handle_scroll(&mut self, scroll_delta_value: f32) {
@@ -349,6 +369,7 @@ impl WindowState {
 
     fn handle_key(&mut self, pressed_physical_keycode: KeyCode) {
         match pressed_physical_keycode {
+            // Camera and Selection Control
             KeyCode::KeyR => {
                 self.selected_atoms.clear();
                 self.measurements.clear();
@@ -369,13 +390,23 @@ impl WindowState {
                     camera.focus_on(protein_center_of_mass, bounding_sphere_radius);
                 }
             }
+            
+            // Representation Modes
             KeyCode::Digit1 => self.set_all_representation(Representation::Spheres),
             KeyCode::Digit2 => self.set_all_representation(Representation::Backbone),
             KeyCode::Digit3 => self.set_all_representation(Representation::BackboneAndSpheres),
+            KeyCode::Digit4 => self.set_all_representation(Representation::Sticks),
+            KeyCode::Digit5 => self.set_all_representation(Representation::BallAndStick),
+            KeyCode::Digit6 => self.set_all_representation(Representation::SpaceFilling),
+            KeyCode::Digit7 => self.set_all_representation(Representation::Lines),
+            
+            // Color Schemes
             KeyCode::KeyC => self.set_all_color_scheme(ColorScheme::ByChain),
             KeyCode::KeyB => self.set_all_color_scheme(ColorScheme::ByBFactor),
             KeyCode::KeyE => self.set_all_color_scheme(ColorScheme::ByElement),
             KeyCode::KeyS => self.set_all_color_scheme(ColorScheme::BySecondary),
+            
+            // Analysis and Surface
             KeyCode::KeyM => {
                 if self.selected_atoms.len() >= 2 {
                     let second_atom_selection_index = self.selected_atoms.len() - 1;
@@ -384,6 +415,16 @@ impl WindowState {
                         .push((first_atom_selection_index, second_atom_selection_index));
                 }
             }
+            KeyCode::KeyF => {
+                // Toggle surface for all proteins (placeholder for a more complex toggle)
+                let locked_protein_store = self.store.read().unwrap();
+                for protein_shared_handle in locked_protein_store.iter() {
+                    let mut protein_mutable_data = protein_shared_handle.write().unwrap();
+                    let current_visibility = protein_mutable_data.molecular_surface_mesh.is_surface_visible;
+                    protein_mutable_data.molecular_surface_mesh.is_surface_visible = !current_visibility;
+                }
+            }
+            
             KeyCode::Escape => std::process::exit(0),
             _ => {}
         }
@@ -556,14 +597,10 @@ async fn run(initial_script: Option<String>) {
     let main_event_loop = EventLoop::new().unwrap();
     let mut app = App::new().await;
 
-    // Run the initial script if provided, otherwise fallback to init.lua
-    if let Some(script_path) = initial_script {
-        if let Err(e) = app.script_engine.run_file(&script_path) {
-            eprintln!("Error running script {}: {}", script_path, e);
-        }
-    } else if std::path::Path::new("scripts/init.lua").exists() {
-        if let Err(e) = app.script_engine.run_file("scripts/init.lua") {
-            eprintln!("Error running scripts/init.lua: {}", e);
+    // Run the initial script if provided by the user
+    if let Some(provided_initial_script_path) = initial_script {
+        if let Err(script_execution_error) = app.script_engine.run_file(&provided_initial_script_path) {
+            eprintln!("Error running explicitly provided script {}: {}", provided_initial_script_path, script_execution_error);
         }
     }
 

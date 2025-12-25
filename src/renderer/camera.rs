@@ -88,16 +88,18 @@ impl Camera {
     }
 
     /// Generates a ray in world space from screen coordinates
-    pub fn ray_from_screen(
+    pub fn calculate_ray_from_screen_coordinates(
         &self,
         screen_coordinates: Vec2,
-        screen_dimensions: Vec2,
+        viewport_dimensions: Vec2,
     ) -> (Vec3, Vec3) {
         let normalized_device_coordinates = Vec2::new(
-            (2.0 * screen_coordinates.x / screen_dimensions.x) - 1.0,
-            1.0 - (2.0 * screen_coordinates.y / screen_dimensions.y),
+            (2.0 * screen_coordinates.x / viewport_dimensions.x) - 1.0,
+            1.0 - (2.0 * screen_coordinates.y / viewport_dimensions.y),
         );
         let inverse_view_projection_matrix = self.view_projection_matrix().inverse();
+        
+        // glam's Mat4::perspective_rh maps the near plane to -1.0 and far to 1.0 (GL convention)
         let near_plane_world_point = inverse_view_projection_matrix.project_point3(Vec3::new(
             normalized_device_coordinates.x,
             normalized_device_coordinates.y,
@@ -108,7 +110,8 @@ impl Camera {
             normalized_device_coordinates.y,
             1.0,
         ));
-        let ray_direction_vector = (far_plane_world_point - near_plane_world_point).normalize();
-        (near_plane_world_point, ray_direction_vector)
+        
+        let ray_direction_unit_vector = (far_plane_world_point - near_plane_world_point).normalize();
+        (near_plane_world_point, ray_direction_unit_vector)
     }
 }
