@@ -7,6 +7,7 @@ use mlua::UserData;
 use std::sync::{Arc, RwLock};
 
 use crate::protein::{ColorScheme, ProteinData, Representation};
+use crate::lua_api::selection::LuaSelection;
 
 /// A Lua-exposed wrapper around a shared protein data object
 #[derive(Clone)]
@@ -194,17 +195,13 @@ impl UserData for LuaProtein {
             },
         );
 
-        // protein:select(query) returns a list of atom indices matching the PyMOL-style selection query
-        methods.add_method("select", |lua_context, this, selection_query_string: String| {
+        // protein:select(query) returns a LuaSelection object matching the PyMOL-style selection query
+        methods.add_method("select", |_, this, selection_query_string: String| {
             let locked_protein_data = this.inner.read().unwrap();
             let selection_set = locked_protein_data.select_atoms_from_string(&selection_query_string)
                 .map_err(|error_message| mlua::Error::RuntimeError(error_message))?;
             
-            let lua_selected_indices_table = lua_context.create_table()?;
-            for (selection_index, atom_index) in selection_set.atom_indices.iter().enumerate() {
-                lua_selected_indices_table.set(selection_index + 1, *atom_index)?;
-            }
-            Ok(lua_selected_indices_table)
+            Ok(LuaSelection::new(selection_set))
         });
 
         // protein:representation(mode) sets the representation mode
@@ -259,7 +256,7 @@ impl UserData for LuaProtein {
         // protein:hydrogen_bonds() returns a list of detected hydrogen bonds
         methods.add_method("hydrogen_bonds", |lua_context, this, ()| {
             let locked_protein_data = this.inner.read().unwrap();
-            let identified_hydrogen_bonds = crate::analysis::hbonds::detect_hydrogen_bonds_in_protein(&locked_protein_data);
+            let identified_hydrogen_bonds = crate::analysis::hydrogen_bonds::detect_hydrogen_bonds_in_protein(&locked_protein_data);
             
             let lua_hydrogen_bonds_table = lua_context.create_table()?;
             for (bond_indexing_counter, current_bond) in identified_hydrogen_bonds.into_iter().enumerate() {
@@ -301,19 +298,29 @@ impl UserData for LuaProtein {
         });
 
         // protein:rmsd(other_protein) calculates the RMSD between two proteins based on Alpha Carbons from the first model
-        methods.add_method("rmsd", |_, this, other_lua_protein: LuaProtein| {
+        // protein:rmsd(other_protein, selection) calculates the RMSD between two proteins, optionally restricted to a selection
+        methods.add_method("rmsd", |_, this, (other_lua_protein, optional_selection): (LuaProtein, Option<LuaSelection>)| {
             let reference_protein_locked_data = this.inner.read().unwrap();
             let moving_protein_locked_data = other_lua_protein.inner.read().unwrap();
             
-            let reference_alpha_carbon_positions = reference_protein_locked_data
-                .get_alpha_carbon_positions_for_first_model();
+            let reference_alpha_carbon_positions = if let Some(selection) = optional_selection {
+                let mut selected_positions = Vec::new();
+                for &atom_index in &selection.inner_selection_set.atom_indices {
+                    let atom_reference = reference_protein_locked_data.pdb.atoms().nth(atom_index).unwrap();
+                    let atom_position_tuple = atom_reference.pos();
+                    selected_positions.push(glam::Vec3::new(atom_position_tuple.0 as f32, atom_position_tuple.1 as f32, atom_position_tuple.2 as f32));
+                }
+                selected_positions
+            } else {
+                reference_protein_locked_data.get_alpha_carbon_positions_for_first_model()
+            };
                 
             let moving_alpha_carbon_positions = moving_protein_locked_data
                 .get_alpha_carbon_positions_for_first_model();
             
             if reference_alpha_carbon_positions.len() != moving_alpha_carbon_positions.len() {
                 return Err(mlua::Error::RuntimeError(format!(
-                    "Coordinate sets must have the same length for RMSD calculation ({} vs {} CA atoms). Try aligning sequences or selecting identical residues.",
+                    "Coordinate sets must have the same length for RMSD calculation ({} vs {} atoms).",
                     reference_alpha_carbon_positions.len(),
                     moving_alpha_carbon_positions.len()
                 )));
@@ -325,16 +332,29 @@ impl UserData for LuaProtein {
             ).map_err(|error_message| mlua::Error::RuntimeError(error_message))
         });
 
-        // protein:superpose(reference_protein) superimposes this protein onto a reference using Kabsch algorithm
-        methods.add_method_mut("superpose", |_, this, reference_lua_protein: LuaProtein| {
+        // protein:superpose(reference_protein, selection) superimposes this protein onto a reference using Kabsch algorithm
+        methods.add_method_mut("superpose", |_, this, (reference_lua_protein, optional_selection): (LuaProtein, Option<LuaSelection>)| {
             let mut moving_protein_mutable_data = this.inner.write().unwrap();
             let reference_protein_locked_data = reference_lua_protein.inner.read().unwrap();
             
-            let reference_alpha_carbon_positions = reference_protein_locked_data
-                .get_alpha_carbon_positions_for_first_model();
-                
-            let moving_alpha_carbon_positions = moving_protein_mutable_data
-                .get_alpha_carbon_positions_for_first_model();
+            let (reference_alpha_carbon_positions, moving_alpha_carbon_positions) = if let Some(selection) = optional_selection {
+                let mut reference_positions = Vec::new();
+                let mut moving_positions = Vec::new();
+                for &atom_index in &selection.inner_selection_set.atom_indices {
+                    let reference_atom_handle = reference_protein_locked_data.pdb.atoms().nth(atom_index).unwrap();
+                    let moving_atom_handle = moving_protein_mutable_data.pdb.atoms().nth(atom_index).unwrap();
+                    let reference_atom_position_tuple = reference_atom_handle.pos();
+                    let moving_atom_position_tuple = moving_atom_handle.pos();
+                    reference_positions.push(glam::Vec3::new(reference_atom_position_tuple.0 as f32, reference_atom_position_tuple.1 as f32, reference_atom_position_tuple.2 as f32));
+                    moving_positions.push(glam::Vec3::new(moving_atom_position_tuple.0 as f32, moving_atom_position_tuple.1 as f32, moving_atom_position_tuple.2 as f32));
+                }
+                (reference_positions, moving_positions)
+            } else {
+                (
+                    reference_protein_locked_data.get_alpha_carbon_positions_for_first_model(),
+                    moving_protein_mutable_data.get_alpha_carbon_positions_for_first_model()
+                )
+            };
                 
             if reference_alpha_carbon_positions.len() != moving_alpha_carbon_positions.len() {
                 return Err(mlua::Error::RuntimeError(format!(
@@ -349,10 +369,10 @@ impl UserData for LuaProtein {
             let moving_center_of_mass = moving_protein_mutable_data.center_of_mass();
             
             let reference_centered_positions: Vec<_> = reference_alpha_carbon_positions.iter()
-                .map(|&position| position - reference_center_of_mass)
+                .map(|&position_vector| position_vector - reference_center_of_mass)
                 .collect();
             let moving_centered_positions: Vec<_> = moving_alpha_carbon_positions.iter()
-                .map(|&position| position - moving_center_of_mass)
+                .map(|&position_vector| position_vector - moving_center_of_mass)
                 .collect();
             
             let optimal_rotation_matrix = crate::analysis::rmsd::compute_kabsch_optimal_rotation(
@@ -376,7 +396,7 @@ impl UserData for LuaProtein {
                     transformed_position_vector.x as f64,
                     transformed_position_vector.y as f64,
                     transformed_position_vector.z as f64
-                ));
+                )).unwrap();
             }
             
             Ok(())

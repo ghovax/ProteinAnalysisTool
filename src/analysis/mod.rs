@@ -2,4 +2,4 @@
 
 pub mod rmsd;
 pub mod dihedrals;
-pub mod hbonds;
+pub mod hydrogen_bonds;

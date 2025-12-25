@@ -66,6 +66,8 @@ pub enum SelectionExpression {
     AtomName(String),
     /// Select all atoms of a specific element (e.g., C)
     Element(String),
+    /// Select all atoms in a specific model (1-based index)
+    Model(usize),
     /// Select all backbone atoms (N, CA, C, O, OXT)
     Backbone,
     /// Select all non-backbone atoms

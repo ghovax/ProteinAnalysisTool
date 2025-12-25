@@ -9,6 +9,7 @@ enum Token {
     ResidueIdentifierKeyword,
     AtomNameKeyword,
     ElementKeyword,
+    ModelKeyword,
     BackboneKeyword,
     SidechainKeyword,
     HelixKeyword,
@@ -71,7 +72,7 @@ impl<'a> SelectionParser<'a> {
                 self.advance_token_position();
                 let right_expression = self.parse_not_expression()?;
                 left_expression = SelectionExpression::And(Box::new(left_expression), Box::new(right_expression));
-            } else if matches!(next_token, Token::ChainKeyword | Token::ResidueNameKeyword | Token::ResidueIdentifierKeyword | Token::AtomNameKeyword | Token::ElementKeyword | 
+            } else if matches!(next_token, Token::ChainKeyword | Token::ResidueNameKeyword | Token::ResidueIdentifierKeyword | Token::AtomNameKeyword | Token::ElementKeyword | Token::ModelKeyword | 
                                Token::BackboneKeyword | Token::SidechainKeyword | Token::HelixKeyword | Token::SheetKeyword | 
                                Token::WithinKeyword | Token::AllKeyword | Token::NotOperator | Token::LeftParenthesis | Token::Identifier(_)) {
                 let right_expression = self.parse_not_expression()?;
@@ -145,6 +146,14 @@ impl<'a> SelectionParser<'a> {
                     Err("Expected element symbol after 'elem' keyword".to_string())
                 }
             }
+            Some(Token::ModelKeyword) => {
+                self.advance_token_position();
+                if let Some(Token::Number(number)) = self.advance_token_position() {
+                    Ok(SelectionExpression::Model(number as usize))
+                } else {
+                    Err("Expected model number after 'model' keyword".to_string())
+                }
+            }
             Some(Token::BackboneKeyword) => {
                 self.advance_token_position();
                 Ok(SelectionExpression::Backbone)
@@ -188,6 +197,7 @@ impl<'a> SelectionParser<'a> {
                     "sidechain" => Ok(SelectionExpression::Sidechain),
                     "helix" => Ok(SelectionExpression::Helix),
                     "sheet" => Ok(SelectionExpression::Sheet),
+                    "model" => Err("Expected model number after 'model' keyword".to_string()),
                     _ => Ok(SelectionExpression::ResidueName(identifier_string.to_uppercase())),
                 }
             }
@@ -252,6 +262,7 @@ fn tokenize_selection_string(input_string: &str) -> Vec<Token> {
                     "resi" => tokens.push(Token::ResidueIdentifierKeyword),
                     "name" => tokens.push(Token::AtomNameKeyword),
                     "elem" => tokens.push(Token::ElementKeyword),
+                    "model" => tokens.push(Token::ModelKeyword),
                     "backbone" => tokens.push(Token::BackboneKeyword),
                     "sidechain" => tokens.push(Token::SidechainKeyword),
                     "helix" => tokens.push(Token::HelixKeyword),

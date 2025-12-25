@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use log::warn;
 
-use super::fetch::{fetch_pdb, load_file, FileFormat};
+use super::fetch_rcsb::{fetch_pdb, load_file, FileFormat};
 use crate::selection::SelectionSet;
 
 use serde::{Deserialize, Serialize};

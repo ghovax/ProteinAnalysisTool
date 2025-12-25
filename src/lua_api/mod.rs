@@ -4,6 +4,7 @@
 //! and exposes an API for fetching, loading, and inspecting protein structures
 
 mod protein;
+mod selection;
 
 use mlua::{Lua, Result};
 use std::sync::{Arc, RwLock};

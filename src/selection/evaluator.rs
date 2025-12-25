@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 use glam::Vec3;
-use pdbtbx::{ContainsAtomConformerResidue, ContainsAtomConformerResidueChain};
+use pdbtbx::{ContainsAtomConformerResidue, ContainsAtomConformerResidueChain, ContainsAtomConformerResidueChainModel};
 
 use super::{SelectionExpression, SelectionSet};
 use crate::protein::structure::ProteinData;
@@ -26,6 +26,7 @@ impl<'a> Evaluator<'a> {
             SelectionExpression::ResidueRange(start_number, end_number) => self.select_atoms_by_residue_number_range(*start_number, *end_number),
             SelectionExpression::AtomName(atom_name) => self.select_atoms_by_atom_name(atom_name),
             SelectionExpression::Element(element_symbol) => self.select_atoms_by_element_symbol(element_symbol),
+            SelectionExpression::Model(model_index) => self.select_atoms_by_model_index(*model_index),
             SelectionExpression::Backbone => self.select_backbone_atoms(),
             SelectionExpression::Sidechain => self.select_sidechain_atoms(),
             SelectionExpression::Helix => self.select_atoms_in_helices(),
@@ -97,6 +98,19 @@ impl<'a> Evaluator<'a> {
         self.protein.pdb.atoms()
             .enumerate()
             .filter(|(_, atom_reference)| atom_reference.element().map_or(false, |element| element.symbol() == target_element_symbol))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    fn select_atoms_by_model_index(&self, target_model_index: usize) -> HashSet<usize> {
+        self.protein.pdb.atoms_with_hierarchy()
+            .enumerate()
+            .filter(|(_, atom_hierarchy)| {
+                // Models in pdbtbx might be 0-based or use their serial number. 
+                // We'll compare with model serial number if available, or just use iteration order if needed.
+                // Standard PDB MODEL records use 1-based indices.
+                atom_hierarchy.model().serial_number() == target_model_index
+            })
             .map(|(index, _)| index)
             .collect()
     }

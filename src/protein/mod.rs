@@ -3,7 +3,7 @@
 //! This module provides functionality for fetching, parsing, and managing
 //! protein structures
 
-pub mod fetch;
+pub mod fetch_rcsb;
 pub mod structure;
 pub mod bonds;
 
