@@ -54,6 +54,10 @@ pub struct PDB {
     models: Vec<Model>,
     /// Bonds in this PDB.
     bonds: Vec<(usize, usize, Bond)>,
+    /// Secondary structure helix annotations from HELIX records
+    helices: Vec<HelixAnnotation>,
+    /// Secondary structure sheet/strand annotations from SHEET records
+    sheets: Vec<SheetAnnotation>,
 }
 
 /// # Creators
@@ -71,6 +75,8 @@ impl PDB {
             symmetry: None,
             models: Vec::new(),
             bonds: Vec::new(),
+            helices: Vec::new(),
+            sheets: Vec::new(),
         }
     }
 }
@@ -201,6 +207,134 @@ impl PDB {
         F: Fn(&MtriX) -> bool,
     {
         self.mtrix.retain(|m| !predicate(m));
+    }
+}
+
+/// # Secondary Structure (Helices)
+/// Functionality for working with helix annotations from HELIX records.
+impl PDB {
+    /// Get the number of helix annotations in this PDB.
+    pub fn helix_count(&self) -> usize {
+        self.helices.len()
+    }
+
+    /// Get an iterator of references to the helix annotations.
+    pub fn helices(&self) -> impl DoubleEndedIterator<Item = &HelixAnnotation> + '_ {
+        self.helices.iter()
+    }
+
+    /// <div class="warning">Available on crate feature `rayon` only</div>
+    /// Get a parallel iterator of references to the helix annotations.
+    #[cfg(feature = "rayon")]
+    pub fn par_helices(&self) -> impl ParallelIterator<Item = &HelixAnnotation> + '_ {
+        self.helices.par_iter()
+    }
+
+    /// Get an iterator of mutable references to the helix annotations.
+    pub fn helices_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut HelixAnnotation> + '_ {
+        self.helices.iter_mut()
+    }
+
+    /// <div class="warning">Available on crate feature `rayon` only</div>
+    /// Get a parallel iterator of mutable references to the helix annotations.
+    #[cfg(feature = "rayon")]
+    pub fn par_helices_mut(&mut self) -> impl ParallelIterator<Item = &mut HelixAnnotation> + '_ {
+        self.helices.par_iter_mut()
+    }
+
+    /// Add a helix annotation to this PDB.
+    pub fn add_helix(&mut self, helix: HelixAnnotation) {
+        self.helices.push(helix);
+    }
+
+    /// Delete the helix annotations matching the given predicate.
+    pub fn delete_helices_by<F>(&mut self, predicate: F)
+    where
+        F: Fn(&HelixAnnotation) -> bool,
+    {
+        self.helices.retain(|h| !predicate(h));
+    }
+
+    /// Check if a residue is part of any helix.
+    pub fn residue_in_helix(&self, chain_id: &str, residue_number: isize) -> bool {
+        self.helices
+            .iter()
+            .any(|h| h.contains_residue(chain_id, residue_number))
+    }
+
+    /// Get the helix annotation containing a specific residue, if any.
+    pub fn helix_for_residue(
+        &self,
+        chain_id: &str,
+        residue_number: isize,
+    ) -> Option<&HelixAnnotation> {
+        self.helices
+            .iter()
+            .find(|h| h.contains_residue(chain_id, residue_number))
+    }
+}
+
+/// # Secondary Structure (Sheets)
+/// Functionality for working with sheet/strand annotations from SHEET records.
+impl PDB {
+    /// Get the number of sheet strand annotations in this PDB.
+    pub fn sheet_count(&self) -> usize {
+        self.sheets.len()
+    }
+
+    /// Get an iterator of references to the sheet strand annotations.
+    pub fn sheets(&self) -> impl DoubleEndedIterator<Item = &SheetAnnotation> + '_ {
+        self.sheets.iter()
+    }
+
+    /// <div class="warning">Available on crate feature `rayon` only</div>
+    /// Get a parallel iterator of references to the sheet strand annotations.
+    #[cfg(feature = "rayon")]
+    pub fn par_sheets(&self) -> impl ParallelIterator<Item = &SheetAnnotation> + '_ {
+        self.sheets.par_iter()
+    }
+
+    /// Get an iterator of mutable references to the sheet strand annotations.
+    pub fn sheets_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut SheetAnnotation> + '_ {
+        self.sheets.iter_mut()
+    }
+
+    /// <div class="warning">Available on crate feature `rayon` only</div>
+    /// Get a parallel iterator of mutable references to the sheet strand annotations.
+    #[cfg(feature = "rayon")]
+    pub fn par_sheets_mut(&mut self) -> impl ParallelIterator<Item = &mut SheetAnnotation> + '_ {
+        self.sheets.par_iter_mut()
+    }
+
+    /// Add a sheet strand annotation to this PDB.
+    pub fn add_sheet(&mut self, sheet: SheetAnnotation) {
+        self.sheets.push(sheet);
+    }
+
+    /// Delete the sheet strand annotations matching the given predicate.
+    pub fn delete_sheets_by<F>(&mut self, predicate: F)
+    where
+        F: Fn(&SheetAnnotation) -> bool,
+    {
+        self.sheets.retain(|s| !predicate(s));
+    }
+
+    /// Check if a residue is part of any sheet strand.
+    pub fn residue_in_sheet(&self, chain_id: &str, residue_number: isize) -> bool {
+        self.sheets
+            .iter()
+            .any(|s| s.contains_residue(chain_id, residue_number))
+    }
+
+    /// Get the sheet strand annotation containing a specific residue, if any.
+    pub fn sheet_for_residue(
+        &self,
+        chain_id: &str,
+        residue_number: isize,
+    ) -> Option<&SheetAnnotation> {
+        self.sheets
+            .iter()
+            .find(|s| s.contains_residue(chain_id, residue_number))
     }
 }
 

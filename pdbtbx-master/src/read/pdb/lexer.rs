@@ -38,6 +38,8 @@ pub(crate) fn lex_line(
             (false, "SEQADV") => Ok(lex_seqadv(linenumber, line)),
             (false, "MODRES") => Ok(lex_modres(linenumber, line)),
             (false, "SSBOND") => Ok(lex_ssbond(linenumber, line)),
+            (false, "HELIX ") => Ok(lex_helix(linenumber, line)),
+            (false, "SHEET ") => Ok(lex_sheet(linenumber, line)),
             (_, "ENDMDL") => Ok((LexItem::EndModel(), Vec::new())),
             (_, "TER   ") => Ok((LexItem::TER(), Vec::new())),
             (_, "END   ") => Ok((LexItem::End(), Vec::new())),
@@ -691,6 +693,150 @@ fn lex_ssbond(linenumber: u32, line: &str) -> (LexItem, Vec<BoxedError<'static, 
             (res_1, res_seq_1, icode_1, chain_1.to_string()),
             (res_2, res_seq_2, icode_2, chain_2.to_string()),
             extra,
+        ),
+        errors,
+    )
+}
+
+/// Parse a HELIX record into the corresponding LexItem
+/// PDB format columns (1-indexed):
+///   8-10: serial number
+///  12-14: helix ID
+///  16-18: initial residue name
+///  20:    initial chain ID
+///  22-25: initial sequence number
+///  26:    initial insertion code
+///  28-30: terminal residue name
+///  32:    terminal chain ID
+///  34-37: terminal sequence number
+///  38:    terminal insertion code
+///  39-40: helix class
+///  72-76: length of helix
+fn lex_helix(linenumber: u32, line: &str) -> (LexItem, Vec<BoxedError<'static, ErrorLevel>>) {
+    let mut errors = Vec::new();
+    let chars: &[u8] = line.as_bytes();
+
+    let serial_number: usize = parse(linenumber, line, 7..10, &mut errors);
+    let helix_id: String = parse(linenumber, line, 11..14, &mut errors);
+    let initial_residue_name: String = parse(linenumber, line, 15..18, &mut errors);
+    let initial_chain_id = if chars.len() > 19 {
+        String::from(parse_char(linenumber, chars, 19, &mut errors))
+    } else {
+        String::new()
+    };
+    let initial_seq_num: isize = parse(linenumber, line, 21..25, &mut errors);
+    let initial_insertion_code = if chars.len() > 25 && chars[25] != b' ' {
+        Some(String::from(parse_char(linenumber, chars, 25, &mut errors)))
+    } else {
+        None
+    };
+    let terminal_residue_name: String = parse(linenumber, line, 27..30, &mut errors);
+    let terminal_chain_id = if chars.len() > 31 {
+        String::from(parse_char(linenumber, chars, 31, &mut errors))
+    } else {
+        String::new()
+    };
+    let terminal_seq_num: isize = parse(linenumber, line, 33..37, &mut errors);
+    let terminal_insertion_code = if chars.len() > 37 && chars[37] != b' ' {
+        Some(String::from(parse_char(linenumber, chars, 37, &mut errors)))
+    } else {
+        None
+    };
+    let helix_class: usize = if line.len() >= 40 {
+        parse(linenumber, line, 38..40, &mut errors)
+    } else {
+        1 // Default to right-handed alpha
+    };
+    let length: usize = if line.len() >= 76 {
+        parse(linenumber, line, 71..76, &mut errors)
+    } else {
+        0
+    };
+
+    (
+        LexItem::Helix(
+            serial_number,
+            helix_id,
+            initial_residue_name,
+            initial_chain_id,
+            initial_seq_num,
+            initial_insertion_code,
+            terminal_residue_name,
+            terminal_chain_id,
+            terminal_seq_num,
+            terminal_insertion_code,
+            helix_class,
+            length,
+        ),
+        errors,
+    )
+}
+
+/// Parse a SHEET record into the corresponding LexItem
+/// PDB format columns (1-indexed):
+///   8-10: strand number
+///  12-14: sheet ID
+///  15-16: number of strands
+///  18-20: initial residue name
+///  22:    initial chain ID
+///  23-26: initial sequence number
+///  27:    initial insertion code
+///  29-31: terminal residue name
+///  33:    terminal chain ID
+///  34-37: terminal sequence number
+///  38:    terminal insertion code
+///  39-40: sense (0=first, 1=parallel, -1=antiparallel)
+fn lex_sheet(linenumber: u32, line: &str) -> (LexItem, Vec<BoxedError<'static, ErrorLevel>>) {
+    let mut errors = Vec::new();
+    let chars: &[u8] = line.as_bytes();
+
+    let strand_number: usize = parse(linenumber, line, 7..10, &mut errors);
+    let sheet_id: String = parse(linenumber, line, 11..14, &mut errors);
+    let num_strands: usize = parse(linenumber, line, 14..16, &mut errors);
+    let initial_residue_name: String = parse(linenumber, line, 17..20, &mut errors);
+    let initial_chain_id = if chars.len() > 21 {
+        String::from(parse_char(linenumber, chars, 21, &mut errors))
+    } else {
+        String::new()
+    };
+    let initial_seq_num: isize = parse(linenumber, line, 22..26, &mut errors);
+    let initial_insertion_code = if chars.len() > 26 && chars[26] != b' ' {
+        Some(String::from(parse_char(linenumber, chars, 26, &mut errors)))
+    } else {
+        None
+    };
+    let terminal_residue_name: String = parse(linenumber, line, 28..31, &mut errors);
+    let terminal_chain_id = if chars.len() > 32 {
+        String::from(parse_char(linenumber, chars, 32, &mut errors))
+    } else {
+        String::new()
+    };
+    let terminal_seq_num: isize = parse(linenumber, line, 33..37, &mut errors);
+    let terminal_insertion_code = if chars.len() > 37 && chars[37] != b' ' {
+        Some(String::from(parse_char(linenumber, chars, 37, &mut errors)))
+    } else {
+        None
+    };
+    let sense: isize = if line.len() >= 40 {
+        parse(linenumber, line, 38..40, &mut errors)
+    } else {
+        0
+    };
+
+    (
+        LexItem::Sheet(
+            strand_number,
+            sheet_id,
+            num_strands,
+            initial_residue_name,
+            initial_chain_id,
+            initial_seq_num,
+            initial_insertion_code,
+            terminal_residue_name,
+            terminal_chain_id,
+            terminal_seq_num,
+            terminal_insertion_code,
+            sense,
         ),
         errors,
     )

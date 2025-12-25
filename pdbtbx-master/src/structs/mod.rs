@@ -12,6 +12,7 @@ mod mtrix;
 mod pdb;
 mod residue;
 mod search;
+mod secondary_structure;
 mod symmetry;
 mod unit_cell;
 
@@ -28,5 +29,6 @@ pub use mtrix::MtriX;
 pub use pdb::PDB;
 pub use residue::Residue;
 pub use search::*;
+pub use secondary_structure::{HelixAnnotation, HelixClass, SheetAnnotation, SheetSense};
 pub use symmetry::Symmetry;
 pub use unit_cell::UnitCell;

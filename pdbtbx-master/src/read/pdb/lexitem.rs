@@ -197,4 +197,58 @@ pub(crate) enum LexItem {
     End(),
     /// Empty line, just ignore
     Empty(),
+    /// A HELIX record for secondary structure
+    /// * serial_number
+    /// * helix_id
+    /// * initial_residue_name
+    /// * initial_chain_id
+    /// * initial_seq_num
+    /// * initial_insertion_code
+    /// * terminal_residue_name
+    /// * terminal_chain_id
+    /// * terminal_seq_num
+    /// * terminal_insertion_code
+    /// * helix_class
+    /// * length
+    Helix(
+        usize,
+        String,
+        String,
+        String,
+        isize,
+        Option<String>,
+        String,
+        String,
+        isize,
+        Option<String>,
+        usize,
+        usize,
+    ),
+    /// A SHEET record for secondary structure
+    /// * strand_number
+    /// * sheet_id
+    /// * num_strands
+    /// * initial_residue_name
+    /// * initial_chain_id
+    /// * initial_seq_num
+    /// * initial_insertion_code
+    /// * terminal_residue_name
+    /// * terminal_chain_id
+    /// * terminal_seq_num
+    /// * terminal_insertion_code
+    /// * sense (0 = first strand, 1 = parallel, -1 = anti-parallel)
+    Sheet(
+        usize,
+        String,
+        usize,
+        String,
+        String,
+        isize,
+        Option<String>,
+        String,
+        String,
+        isize,
+        Option<String>,
+        isize,
+    ),
 }

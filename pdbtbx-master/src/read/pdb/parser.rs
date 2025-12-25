@@ -7,7 +7,11 @@ use std::{
 use context_error::{combine_error, combine_errors, BoxedError, Context, CreateError, ErrorKind, FullErrorContent};
 use indexmap::IndexMap;
 
-use crate::{structs::*, validate::*, ErrorLevel, ReadOptions, StrictnessLevel};
+use crate::{
+    structs::*,
+    validate::*,
+    ErrorLevel, ReadOptions, StrictnessLevel,
+};
 
 use super::{lexer::*, lexitem::*, temporary_structs::*, validate::*};
 
@@ -418,6 +422,62 @@ where
                     }
                     item @ LexItem::Modres(..) => modifications.push((line_context.clone(), item)),
                     item @ LexItem::SSBond(..) => bonds.push((line_context.clone(), item)),
+                    LexItem::Helix(
+                        serial_number,
+                        helix_id,
+                        initial_residue_name,
+                        initial_chain_id,
+                        initial_seq_num,
+                        initial_insertion_code,
+                        terminal_residue_name,
+                        _terminal_chain_id,
+                        terminal_seq_num,
+                        terminal_insertion_code,
+                        helix_class,
+                        length,
+                    ) => {
+                        pdb.add_helix(HelixAnnotation::new(
+                            serial_number,
+                            helix_id,
+                            initial_chain_id,
+                            initial_residue_name,
+                            initial_seq_num,
+                            initial_insertion_code,
+                            terminal_residue_name,
+                            terminal_seq_num,
+                            terminal_insertion_code,
+                            HelixClass::from_class_number(helix_class),
+                            length,
+                        ));
+                    }
+                    LexItem::Sheet(
+                        strand_number,
+                        sheet_id,
+                        num_strands,
+                        initial_residue_name,
+                        initial_chain_id,
+                        initial_seq_num,
+                        initial_insertion_code,
+                        terminal_residue_name,
+                        terminal_chain_id,
+                        terminal_seq_num,
+                        terminal_insertion_code,
+                        sense,
+                    ) => {
+                        pdb.add_sheet(SheetAnnotation::new(
+                            strand_number,
+                            sheet_id,
+                            num_strands,
+                            initial_chain_id,
+                            initial_residue_name,
+                            initial_seq_num,
+                            initial_insertion_code,
+                            terminal_residue_name,
+                            terminal_seq_num,
+                            terminal_insertion_code,
+                            SheetSense::from_sense_value(sense),
+                        ));
+                    }
                     LexItem::Master(
                         num_remark,
                         num_empty,
